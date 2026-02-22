@@ -1,10 +1,13 @@
-from google import genai
-import numpy as np
 import json
+
+import numpy as np
+from google import genai
 from sklearn.metrics.pairwise import cosine_similarity
-from preprocessing.CreateEmbeddings import  get_embedding
 from utils import Attributes, get_attr_from_guid
+
 from config import API_KEY
+from preprocessing.CreateEmbeddings import get_embedding
+
 # Set your API key
 api_key = API_KEY
 client = genai.Client(api_key=api_key)
@@ -29,22 +32,46 @@ def get_scene_objects(scene_description, num_obj):
                 "items": {
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string", "description": "The name of the object."},
-                        "Physical properties": {"type": "string", "description": "The description of the physical properties of the object. These may include color, shape, material and texture."},
-                        "Functional properties": {"type": "string", "description": "The description of the functional properties of the object. What are its purpose, how it's used, and what it does?"},
-                        "Contextual properties": {"type": "string", "description": "The description of the contextual properties of the object. In what settings is it used, in which context might it be found, and what settings it belongs in?"},
-                        "quantity": {"type": "number", "description": "The amount of this object.",}
+                        "name": {
+                            "type": "string",
+                            "description": "The name of the object.",
+                        },
+                        "Physical properties": {
+                            "type": "string",
+                            "description": "The description of the physical properties of the object. These may include color, shape, material and texture.",
+                        },
+                        "Functional properties": {
+                            "type": "string",
+                            "description": "The description of the functional properties of the object. What are its purpose, how it's used, and what it does?",
+                        },
+                        "Contextual properties": {
+                            "type": "string",
+                            "description": "The description of the contextual properties of the object. In what settings is it used, in which context might it be found, and what settings it belongs in?",
+                        },
+                        "quantity": {
+                            "type": "number",
+                            "description": "The amount of this object.",
+                        },
                     },
-                    "required": ["name", "Physical properties", "Functional properties", "Contextual properties", "quantity"]
+                    "required": [
+                        "name",
+                        "Physical properties",
+                        "Functional properties",
+                        "Contextual properties",
+                        "quantity",
+                    ],
                 },
             }
         },
-        "required": ["objects"]
+        "required": ["objects"],
     }
 
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt, config={
-        'response_mime_type': 'application/json',
-        'response_schema': response_schema
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": response_schema,
         },
     )
 
@@ -63,7 +90,7 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
     Returns:
         List of top matching prefabs
     """
-    #Get objects needed for scene
+    # Get objects needed for scene
     scene_objects = get_scene_objects(scene_description, top_n)
 
     # Calculate similarity with each prefab
@@ -73,23 +100,45 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
     for asset in scene_objects.get("objects", scene_objects):
         similarities = []
         name = asset.get("name")
-        phys_desc, func_desc, cont_desc = asset.get("Physical properties"), asset.get("Functional properties"), asset.get("Contextual properties")
-        object_phys_embedding, object_func_embedding, object_cont_embedding = get_embedding(f"{name}: {phys_desc}"), get_embedding(f"{name}: {func_desc}"), get_embedding(f"{name}: {cont_desc}")
+        phys_desc, func_desc, cont_desc = (
+            asset.get("Physical properties"),
+            asset.get("Functional properties"),
+            asset.get("Contextual properties"),
+        )
+        object_phys_embedding, object_func_embedding, object_cont_embedding = (
+            get_embedding(f"{name}: {phys_desc}"),
+            get_embedding(f"{name}: {func_desc}"),
+            get_embedding(f"{name}: {cont_desc}"),
+        )
         for prefab_name, data in embeddings_data.items():
             prefab_embedding_phys = np.array(data["embedding_phys"])
             prefab_embedding_func = np.array(data["embedding_func"])
             prefab_embedding_cont = np.array(data["embedding_cont"])
 
             # Calculate cosine similarity
-            similarity = (cosine_similarity([object_phys_embedding], [prefab_embedding_phys])[0][0]/3 + cosine_similarity([object_func_embedding],[prefab_embedding_func])[0][0]/3
-                          + cosine_similarity([object_cont_embedding], [prefab_embedding_cont])[0][0]/3)
+            similarity = (
+                cosine_similarity(
+                    [object_phys_embedding], [prefab_embedding_phys]
+                )[0][0]
+                / 3
+                + cosine_similarity(
+                    [object_func_embedding], [prefab_embedding_func]
+                )[0][0]
+                / 3
+                + cosine_similarity(
+                    [object_cont_embedding], [prefab_embedding_cont]
+                )[0][0]
+                / 3
+            )
 
-            similarities.append({
-                "prefab_name": prefab_name,
-                "guid": data["guid"],
-                "quantity": asset.get("quantity"),
-                "similarity": similarity
-            })
+            similarities.append(
+                {
+                    "prefab_name": prefab_name,
+                    "guid": data["guid"],
+                    "quantity": asset.get("quantity"),
+                    "similarity": similarity,
+                }
+            )
 
         # Sort by similarity (highest first)
         similarities.sort(key=lambda x: x["similarity"], reverse=True)
@@ -98,14 +147,33 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
         #############
         # Let LLM decide from top5
         #############
-        get_attr_from_guid(Attributes.FULL_DESCRIPTION, top5[-1],[])
+        get_attr_from_guid(Attributes.FULL_DESCRIPTION, top5[-1], [])
         get_attr_from_guid(Attributes.NAME, top5[-1], [])
-        index = pick_best_choice(f"{name}: {phys_desc} {func_desc} {cont_desc}", [{k : v for k, v in a.items() if k == "Full description" or k == "name"} for a in top5[-1]])
-        if 0 < index < 6: chosen_assets.append(top5[-1][index - 1])
+        index = pick_best_choice(
+            f"{name}: {phys_desc} {func_desc} {cont_desc}",
+            [
+                {
+                    k: v
+                    for k, v in a.items()
+                    if k == "Full description" or k == "name"
+                }
+                for a in top5[-1]
+            ],
+        )
+        if 0 < index < 6:
+            chosen_assets.append(top5[-1][index - 1])
         else:
-            chosen_assets.append({"guid": 0, "reason": f"Object not found. No matches exist for '{name}' in your database."})
-            print(f"Object not found. No matches exist for '{name}' in your database.")
+            chosen_assets.append(
+                {
+                    "guid": 0,
+                    "reason": f"Object not found. No matches exist for '{name}' in your database.",
+                }
+            )
+            print(
+                f"Object not found. No matches exist for '{name}' in your database."
+            )
     return chosen_assets
+
 
 def pick_best_choice(target_object, top5):
     prompt = """
@@ -115,10 +183,11 @@ def pick_best_choice(target_object, top5):
     """
 
     response = client.models.generate_content(
-        model="gemini-2.0-flash", contents=[prompt, str(target_object), str(top5)],
+        model="gemini-2.0-flash",
+        contents=[prompt, str(target_object), str(top5)],
         config={
-            'response_mime_type': 'application/json',
-            'response_schema': int
+            "response_mime_type": "application/json",
+            "response_schema": int,
         },
     )
     return int(response.text)

@@ -1,8 +1,12 @@
-from enum import Enum
 import json
 import math
+from enum import Enum
+
 import numpy as np
+
 from config import DESCRIPTIONS, OBJ_DATA
+
+
 class Attributes(Enum):
     FULL_DESCRIPTION = "Full description"
     PHYSICAL_PROPERTIES = "physical_properties"
@@ -11,36 +15,47 @@ class Attributes(Enum):
     CENTER = "boundsCenter"
     SIZE = "boundsSize"
     NAME = "name"
+
+
 def get_attr_from_guid(attr, objs, rm_keys):
 
     # Load correct data
     if attr in [Attributes.CENTER, Attributes.SIZE]:
         attr = attr.value
-        with open(OBJ_DATA, 'r') as file:
+        with open(OBJ_DATA, "r") as file:
             bounds_data = json.load(file)["prefabs"]
 
         for obj in objs:
             for data in bounds_data:
-                if data["guid"] ==  obj["guid"]: obj[attr] = data[attr]
+                if data["guid"] == obj["guid"]:
+                    obj[attr] = data[attr]
             for key in rm_keys:
                 del obj[key]
 
     else:
-        with open(DESCRIPTIONS, 'r') as file:
+        with open(DESCRIPTIONS, "r") as file:
             descriptions_data = json.load(file)
         attr = attr.value
         for obj in objs:
             for k, data in descriptions_data.items():
                 if data["guid"] == obj["guid"]:
-                    if attr == Attributes.FULL_DESCRIPTION.value: obj[attr] = data[Attributes.PHYSICAL_PROPERTIES.value] + data[Attributes.FUNCTIONAL_PROPERTIES.value] + data[Attributes.CONTEXTUAL_PROPERTIES.value]
-                    else: obj[attr] = data[attr]
+                    if attr == Attributes.FULL_DESCRIPTION.value:
+                        obj[attr] = (
+                            data[Attributes.PHYSICAL_PROPERTIES.value]
+                            + data[Attributes.FUNCTIONAL_PROPERTIES.value]
+                            + data[Attributes.CONTEXTUAL_PROPERTIES.value]
+                        )
+                    else:
+                        obj[attr] = data[attr]
             for key in rm_keys:
                 del obj[key]
 
     return objs
 
 
-def calculate_pivot_placement(original_center, original_rotation_degrees, pivot_offset):
+def calculate_pivot_placement(
+    original_center, original_rotation_degrees, pivot_offset
+):
     """
     Calculates where to place a new object's pivot so its center aligns
     with an original object's center.
@@ -69,21 +84,15 @@ def calculate_pivot_placement(original_center, original_rotation_degrees, pivot_
     rotation_rad = np.radians(original_rotation_degrees)
     rx, ry, rz = rotation_rad
 
-    rot_x = np.array([
-        [1, 0, 0],
-        [0, np.cos(rx), -np.sin(rx)],
-        [0, np.sin(rx), np.cos(rx)]
-    ])
-    rot_y = np.array([
-        [np.cos(ry), 0, np.sin(ry)],
-        [0, 1, 0],
-        [-np.sin(ry), 0, np.cos(ry)]
-    ])
-    rot_z = np.array([
-        [np.cos(rz), -np.sin(rz), 0],
-        [np.sin(rz), np.cos(rz), 0],
-        [0, 0, 1]
-    ])
+    rot_x = np.array(
+        [[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]]
+    )
+    rot_y = np.array(
+        [[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]]
+    )
+    rot_z = np.array(
+        [[np.cos(rz), -np.sin(rz), 0], [np.sin(rz), np.cos(rz), 0], [0, 0, 1]]
+    )
 
     # Combine matrices (common order: Z, then X, then Y)
     rotation_matrix = rot_y @ rot_x @ rot_z
@@ -96,7 +105,8 @@ def calculate_pivot_placement(original_center, original_rotation_degrees, pivot_
     # New Pivot Position = Target Center Position - Rotated Offset Vector
     new_pivot_position = original_center - rotated_offset
 
-    return [round(float(a),3) for a in list(new_pivot_position)]
+    return [round(float(a), 3) for a in list(new_pivot_position)]
+
 
 def boxes_intersect(center1, size1, center2, size2):
     """
@@ -142,16 +152,18 @@ def get_rotated_bounding_box(size, rotation_degrees):
     half_size = np.array(size) / 2.0
 
     # Create all 8 corners of the box
-    corners = np.array([
-        [-half_size[0], -half_size[1], -half_size[2]],
-        [-half_size[0], -half_size[1], half_size[2]],
-        [-half_size[0], half_size[1], -half_size[2]],
-        [-half_size[0], half_size[1], half_size[2]],
-        [half_size[0], -half_size[1], -half_size[2]],
-        [half_size[0], -half_size[1], half_size[2]],
-        [half_size[0], half_size[1], -half_size[2]],
-        [half_size[0], half_size[1], half_size[2]]
-    ])
+    corners = np.array(
+        [
+            [-half_size[0], -half_size[1], -half_size[2]],
+            [-half_size[0], -half_size[1], half_size[2]],
+            [-half_size[0], half_size[1], -half_size[2]],
+            [-half_size[0], half_size[1], half_size[2]],
+            [half_size[0], -half_size[1], -half_size[2]],
+            [half_size[0], -half_size[1], half_size[2]],
+            [half_size[0], half_size[1], -half_size[2]],
+            [half_size[0], half_size[1], half_size[2]],
+        ]
+    )
 
     # 2. Create a rotation matrix from the Euler angles (in degrees)
     # Convert degrees to radians for numpy's trig functions
@@ -159,27 +171,21 @@ def get_rotated_bounding_box(size, rotation_degrees):
     rx, ry, rz = rotation_rad
 
     # Rotation matrix for X-axis
-    rot_x = np.array([
-        [1, 0, 0],
-        [0, np.cos(rx), -np.sin(rx)],
-        [0, np.sin(rx), np.cos(rx)]
-    ])
+    rot_x = np.array(
+        [[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]]
+    )
 
     # Rotation matrix for Y-axis
     # This matrix is standard for both LHS and RHS. In LHS, a positive rotation
     # correctly maps the Z+ axis towards the X+ axis.
-    rot_y = np.array([
-        [np.cos(ry), 0, np.sin(ry)],
-        [0, 1, 0],
-        [-np.sin(ry), 0, np.cos(ry)]
-    ])
+    rot_y = np.array(
+        [[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]]
+    )
 
     # Rotation matrix for Z-axis
-    rot_z = np.array([
-        [np.cos(rz), -np.sin(rz), 0],
-        [np.sin(rz), np.cos(rz), 0],
-        [0, 0, 1]
-    ])
+    rot_z = np.array(
+        [[np.cos(rz), -np.sin(rz), 0], [np.sin(rz), np.cos(rz), 0], [0, 0, 1]]
+    )
 
     # Combine the rotation matrices. A common order is Z, then X, then Y.
     # This means we apply Z first, then X, then Y to the vectors.
@@ -198,4 +204,4 @@ def get_rotated_bounding_box(size, rotation_degrees):
     # 5. The new bounding box size is the difference between the max and min corners
     new_size = max_corner - min_corner
 
-    return [round(a,3) for a in list(new_size)]
+    return [round(a, 3) for a in list(new_size)]
