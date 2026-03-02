@@ -2,11 +2,13 @@ import json
 import os
 import sys
 import uuid
+from glob import glob
+from os.path import abspath, dirname, join, splitext
 
 import bpy
 import mathutils
 
-sys.path.append(os.path.abspath("."))
+sys.path.append(abspath("."))
 from config import ASSETS, IMAGES, OBJ_DATA
 
 # === CONFIGURATION ===
@@ -41,7 +43,7 @@ class PrefabData:
 
 # === IMPORT HANDLERS ===
 def import_model(path):
-    ext = os.path.splitext(path)[1].lower()
+    ext = splitext(path)[1].lower()
     if ext == ".fbx":
         bpy.ops.import_scene.fbx(filepath=path)
     elif ext == ".obj":
@@ -60,8 +62,19 @@ def import_model(path):
 def clear_scene():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    for block in bpy.data.meshes:
-        bpy.data.meshes.remove(block)
+    for coll in (
+        bpy.data.meshes,
+        bpy.data.materials,
+        bpy.data.textures,
+        bpy.data.images,
+        # bpy.data.node_groups,
+        # bpy.data.lights,
+        bpy.data.cameras,
+        # bpy.data.worlds,
+        # bpy.data.collections,
+    ):
+        for block in list(coll):
+            coll.remove(block, do_unlink=True)
 
 
 # === BOUNDS ===
@@ -120,7 +133,7 @@ def render_thumbnail(obj, angle_name, camera_offset):
     bpy.context.scene.render.film_transparent = True
     bpy.context.scene.render.image_settings.color_mode = "RGBA"
     bpy.context.scene.render.image_settings.file_format = "PNG"
-    bpy.context.scene.render.filepath = os.path.join(
+    bpy.context.scene.render.filepath = join(
         SAVE_PATH, f"{obj.name}_{angle_name}.png"
     )
 
@@ -140,10 +153,13 @@ def process_prefabs():
             (".blend", ".fbx", ".obj", ".glb", ".gltf")
         ):
             continue
+        filename = splitext(file)[0]
+        if len(glob(join(SAVE_PATH, f"{filename}_*.png"))) == 6:
+            continue
 
         print(f"📦 Processing {file}")
         clear_scene()
-        full_path = os.path.join(TARGET_FOLDER, file)
+        full_path = join(TARGET_FOLDER, file)
         import_model(full_path)
 
         mesh_objs = [
@@ -161,7 +177,7 @@ def process_prefabs():
 
         bpy.ops.object.empty_add(type="PLAIN_AXES", location=(0, 0, 0))
         prefab_root = bpy.context.object
-        prefab_root.name = os.path.splitext(file)[0]
+        prefab_root.name = splitext(file)[0]
 
         for obj in mesh_objs:
             obj.parent = prefab_root
@@ -199,6 +215,7 @@ def process_prefabs():
         prefab_data_list.append(prefab.__dict__)
 
     # Save JSON
+    os.makedirs(dirname(JSON_FILE_PATH), exist_ok=True)
     with open(JSON_FILE_PATH, "w") as f:
         json.dump({"prefabs": prefab_data_list}, f, indent=4)
     print(f"✅ JSON saved to {JSON_FILE_PATH}")

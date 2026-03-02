@@ -1,6 +1,11 @@
 import argparse
+import json
 import os
 import subprocess
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from config import ROTATION_DATA
 
 
 def main():
@@ -47,5 +52,12 @@ def main():
             ],
             check=True,
         )
+    else:
+        with open(ROTATION_DATA, "w") as file:
+            json.dump([], file, indent=4)
 
     print("Preprocessing done.")
+
+
+if __name__ == "__main__":
+    main()

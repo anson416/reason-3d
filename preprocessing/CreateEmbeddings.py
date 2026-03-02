@@ -1,17 +1,13 @@
 import json
-import os
 import sys
 import time
+from os.path import abspath, dirname, exists, join
 
 import numpy as np
-from google import genai
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from config import API_KEY, DESCRIPTIONS, EMBEDDINGS
-
-# Set your API key
-api_key = API_KEY
-client = genai.Client(api_key=api_key)
+sys.path.append(abspath(join(dirname(__file__), "..")))
+from config import API_KEY, BASE_URL, DESCRIPTIONS, EMBEDDINGS
+from utils.llm import TextEmbedder
 
 
 def get_embedding(text):
@@ -25,12 +21,10 @@ def get_embedding(text):
         Embedding array
     """
     # Using Gemini's embedding model
-    result = client.models.embed_content(
-        model="text-embedding-004", contents=text
+    te = TextEmbedder(
+        model="text-embedding-3-small", api_key=API_KEY, base_url=BASE_URL
     )
-
-    # Return the embedding values as a numpy array
-    return np.array(result.embeddings[0].values)
+    return te(text, np.ndarray)
 
 
 def embed_descriptions(descriptions_file, embedding_file_path):
@@ -48,7 +42,7 @@ def embed_descriptions(descriptions_file, embedding_file_path):
         prefab_desc = json.load(file)
 
     embeddings_data = {}
-    if os.path.exists(embedding_file_path):
+    if exists(embedding_file_path):
         print(f"Found existing descriptions file: {embedding_file_path}")
         with open(embedding_file_path, "r") as file:
             try:

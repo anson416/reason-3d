@@ -1,15 +1,13 @@
 import argparse
 import json
-import os
 import subprocess
 import sys
 from collections import Counter
+from os.path import abspath, dirname, join
 
-from google import genai
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(abspath(join(dirname(__file__), "..")))
 from Object_retriever import find_assets_for_scene
-from utils import (
+from utilities import (
     Attributes,
     boxes_intersect,
     calculate_pivot_placement,
@@ -17,28 +15,39 @@ from utils import (
     get_rotated_bounding_box,
 )
 
-from config import API_KEY, EMBEDDINGS, ROTATION_DATA
-
-# Set your API key
-api_key = API_KEY
-client = genai.Client(api_key=api_key)
-model = "gemini-2.5-flash"
+from config import API_KEY, BASE_URL, EMBEDDINGS, ROTATION_DATA
+from utils.llm import JsonResponseModel, Llm
 
 
 def get_constraints(scene_description, object_list):
-    prompt = (
-        "You are given a scene description and a list of objects that are part of that scene. Your task is to give me positional and rotational constraints regarding the objects. If the scene description is vague and doesn't contain any positional and rotational information, I "
-        "need you to add this information to create a scene that makes sense. Especially important is where the objects are placed upon or if they are against a wall and if there should be space between them. There should be a constraint for each object about this. E.g. the object is standing on the ground. The object is on the table. "
-        "The object is against the north wall. etc. You are only allowed to use objects from the list to write constraints. Refrain from absolute measurements like 6 feet and so on. Only output the constraints. It may be a long list. Under no circumstances should you contradict constraints from the scene description. "
-        "Start by extracting the constraints that are already part of the scene description and then add the other constraints."
-    )
+    prompt = f"""\
+You are given a scene description: {scene_description}
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt, str(scene_description), str(object_list)],
-    )
+You are also given a list of objects that are part of that scene: {object_list}
 
-    return response.text
+Your task is to give me positional and rotational constraints regarding the objects.
+If the scene description is vague and doesn't contain any positional and rotational information, I need you to add this information to create a scene that makes sense.
+Especially important is where the objects are placed upon or if they are against a wall and if there should be space between them.
+There should be a constraint for each object about this, e.g. the object is standing on the ground. the object is on the table, the object is against the north wall, etc.
+You are only allowed to use objects from the list to write constraints.
+Refrain from absolute measurements like 6 feet and so on.
+Only output the constraints.
+It may be a long list.
+Under no circumstances should you contradict constraints from the scene description.
+Start by extracting the constraints that are already part of the scene description and then add the other constraints.
+"""
+
+    llm = Llm(
+        "gemini-2.5-pro",
+        max_tokens=32768,
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
+    )
+    llm_output = llm(prompt)
+    assert llm_output.response is not None
+    return llm_output.response
 
 
 def rescale_prefabs(objs):
@@ -57,89 +66,87 @@ def rescale_prefabs(objs):
 
 
 def get_order(constraints, objects):
-    prompt = (
-        "You are given a list of constraints on objects about their placements and rotations. You also get the list containing all the objects. Your goal is to sort the list such that "
-        "placing the objects one by one is easiest. For example, if you have a constraint: The cup is on the table. You want to place the table before the cup."
-        "IMPORTANT: Under no circumstances should you add or remove any objects from the list."
-    )
+    class Schema(JsonResponseModel):
+        constraints: list[str]
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt, str(constraints), str(objects)],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": list[str],
-        },
-    )
+    prompt = f"""\
+You are given some constraints on objects about their placements and rotations: {constraints}
 
-    return json.loads(response.text)
+You are also given a list containing all the objects: {objects}
+
+Your goal is to sort the list such that placing the objects one by one is easiest.
+For example, if you have a constraint "the cup is on the table", you want to place the table before the cup.
+IMPORTANT: Under no circumstances should you add or remove any objects from the list.
+
+Output (JSON):
+{Schema.to_str()}"""
+
+    llm = Llm(
+        "gemini-2.5-pro",
+        max_tokens=32768,
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
+    )
+    llm_output = llm(prompt, Schema)
+    return llm_output.response.constraints
 
 
 def place_objects(
     scene_description, object_name, object_size, placed_objects, constraints
 ):
-    system_instructions = "You are an expert AI assistant specializing in 3D object placement for the Unity game engine. Your task is to determine the correct position and rotation for a new object based on a scene description and a list of existing objects. This task requires a lot of complex reasoning and some math."
-    prompt = f"""
-    CRITICAL CONTEXT: UNITY'S 3D SPACE:
-    You MUST adhere to these rules at all times. All calculations and outputs must conform to Unity's coordinate system.
-    
-    Coordinate System: Left-Hand System (LHS).
-    +X axis: Right
-    +Y axis: Up
-    +Z axis: Forward
-    Default Object Orientation: An object with zero rotation (0, 0, 0) faces the positive Z-axis (0, 0, 1) (+Z).
-    Rotation Rule: Rotations are Euler angles (X, Y, Z) in degrees.
-    A positive rotation of 90 degrees around the Y-axis rotates an object from the Forward direction (Z+) towards the Right direction (X+).
-    A negative rotation of 90 degrees around the Y-axis rotates an object from the Forward direction (Z+) towards the Left direction (X-).
-    The floor is at Y = 0.
-    The center of the room is at X = Z = 0
-    
-    YOUR TASK:
-    1.  Analyze the Scene: Read the scene_description and the already_placed_objects list.
-    2.  Determine Placement: Calculate the position and rotation for the new object, {object_name}, which has a bounding box size of {object_size}. Think where this object should be naturally placed and which way it should be facing, if there are no specific constraints on that matter..
-    3.  Adhere to Constraints: Ensure the placement satisfies all layout rules from the scene_description and the constraints list. But ALWAYS prioritize the scene_description, when there are contradictions.
-    4.  Output JSON: Generate a single, clean JSON object with the final position and rotation.
-    INPUT DATA:
-    Scene Description: {scene_description}
-    Constraints: {constraints}
-    New Object to Place:
-    name: {object_name}
-    size: {object_size}
-    Already Placed Objects: {placed_objects}
-    Each object in the list has a name, center, size, size_after_rotation and rotation.
-    The size_after_rotation field is the original size of the bounding box with the applied rotation. This is to save you the trouble of doing the math yourself.
-    
-    """
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "center": {
-                "type": "array",
-                "description": "The center of the object as a 3d vector.",
-                "items": {"type": "number"},
-            },
-            "rotation": {
-                "type": "array",
-                "description": "The rotation of the object as a 3d vector using degrees.",
-                "items": {"type": "number"},
-            },
-        },
-        "required": ["center", "rotation"],
-    }
+    class Schema(JsonResponseModel):
+        center: list[float]
+        rotation: list[float]
 
-    global model
+    system_instructions = """\
+You are an expert AI assistant specializing in 3D object placement for the Unity game engine.
+Your task is to determine the correct position and rotation for a new object based on a scene description and a list of existing objects.
+This task requires a lot of complex reasoning and some math."""
+    prompt = f"""\
+CRITICAL CONTEXT: UNITY'S 3D SPACE:
+You MUST adhere to these rules at all times. All calculations and outputs must conform to Unity's coordinate system.
 
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": response_schema,
-            "system_instruction": system_instructions,
-        },
+Coordinate System: Left-Hand System (LHS).
++X axis: Right
++Y axis: Up
++Z axis: Forward
+Default Object Orientation: An object with zero rotation (0, 0, 0) faces the positive Z-axis (0, 0, 1) (+Z).
+Rotation Rule: Rotations are Euler angles (X, Y, Z) in degrees.
+A positive rotation of 90 degrees around the Y-axis rotates an object from the Forward direction (Z+) towards the Right direction (X+).
+A negative rotation of 90 degrees around the Y-axis rotates an object from the Forward direction (Z+) towards the Left direction (X-).
+The floor is at Y = 0.
+The center of the room is at X = Z = 0
+
+YOUR TASK:
+1.  Analyze the Scene: Read the scene_description and the already_placed_objects list.
+2.  Determine Placement: Calculate the position and rotation for the new object, {object_name}, which has a bounding box size of {object_size}. Think where this object should be naturally placed and which way it should be facing, if there are no specific constraints on that matter..
+3.  Adhere to Constraints: Ensure the placement satisfies all layout rules from the scene_description and the constraints list. But ALWAYS prioritize the scene_description, when there are contradictions.
+4.  Output JSON: Generate a single, clean JSON object with the final position (center, 3 numbers) and rotation (3 numbers in degrees).
+INPUT DATA:
+Scene Description: {scene_description}
+Constraints: {constraints}
+New Object to Place:
+name: {object_name}
+size: {object_size}
+Already Placed Objects: {placed_objects}
+Each object in the list has a name, center, size, size_after_rotation and rotation.
+The size_after_rotation field is the original size of the bounding box with the applied rotation. This is to save you the trouble of doing the math yourself.
+
+Output (JSON):
+{Schema.to_str()}"""
+
+    llm = Llm(
+        "gemini-2.5-pro",
+        max_tokens=32768,
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
     )
-
-    obj = json.loads(response.text)
+    llm_output = llm(prompt, Schema, sys_prompt=system_instructions)
+    obj = llm_output.response.model_dump()
     obj["name"] = object_name
     obj["size"] = object_size
     obj["size_after_rotation"] = get_rotated_bounding_box(
@@ -155,66 +162,55 @@ def update_object(
     constraints,
     intersection_object,
 ):
+    class Schema(JsonResponseModel):
+        center: list[float]
+        rotation: list[float]
+
     system_instructions = "You are an expert AI assistant specializing in 3D object placement for the Unity game engine. Your task is to determine the correct position and rotation for a single object in the scene, based on a scene description and a list of existing objects. This task requires a lot of complex reasoning and some math."
     intersection_prompt = "The objects bounding box is intersecting other objects bounding boxes. Analyze these intersections in the list and ask yourself, if that makes sense."
     intersection_data = f"Intersecting objects list: {intersection_object}. All objects in this list have a non negligible intersecting bounding box with the {object_name}, whether this makes sense or not, is your task to figure out."
-    prompt = f"""
-        CRITICAL CONTEXT: UNITY'S 3D SPACE:
-        You MUST adhere to these rules at all times. All calculations and outputs must conform to Unity's coordinate system.
+    prompt = f"""\
+CRITICAL CONTEXT: UNITY'S 3D SPACE:
+You MUST adhere to these rules at all times. All calculations and outputs must conform to Unity's coordinate system.
 
-        Coordinate System: Left-Hand System (LHS).
-        +X axis: Right
-        +Y axis: Up
-        +Z axis: Forward
-        Default Object Orientation: An object with zero rotation (0, 0, 0) faces the positive Z-axis (0, 0, 1).
-        Rotation Rule: Rotations are Euler angles (X, Y, Z) in degrees.
-        A positive rotation around the Y-axis rotates an object from the Forward direction (Z+) towards the Right direction (X+).
-        A negative rotation around the Y-axis rotates an object from the Forward direction (Z+) towards the Left direction (X-).
-        Bounding Boxes: An object's bounding box rotates with the object. When placing an object relative to another, you must use the existing object's rotation to determine the true world-space orientation and boundaries of its bounding box.
-        The floor is at Y = 0.
-        The center of the room is at X = Z = 0
+Coordinate System: Left-Hand System (LHS).
++X axis: Right
++Y axis: Up
++Z axis: Forward
+Default Object Orientation: An object with zero rotation (0, 0, 0) faces the positive Z-axis (0, 0, 1).
+Rotation Rule: Rotations are Euler angles (X, Y, Z) in degrees.
+A positive rotation around the Y-axis rotates an object from the Forward direction (Z+) towards the Right direction (X+).
+A negative rotation around the Y-axis rotates an object from the Forward direction (Z+) towards the Left direction (X-).
+Bounding Boxes: An object's bounding box rotates with the object. When placing an object relative to another, you must use the existing object's rotation to determine the true world-space orientation and boundaries of its bounding box.
+The floor is at Y = 0.
+The center of the room is at X = Z = 0
 
-        YOUR TASK:
-        1.  Analyze the Scene: Read the scene_description and the already_placed_objects list.
-        2.  Analyze specific object: Look at the {object_name}. Ignore all other objects. Focus only on the {object_name} and check if it satisfies the constraints. Then update it's position and rotation in the output.
-        3.  Adhere to Constraints: Ensure the placement satisfies all layout rules from the scene_description and the constraints list. But ALWAYS prioritize the scene_description, when there are contradictions. {intersection_prompt if len(intersection_object) > 0 else ""}
-        4.  Output JSON: Generate a single, clean JSON object with the final position and rotation.
-        INPUT DATA:
-        Scene Description: {scene_description}
-        Constraints: {constraints}
-        Already Placed Objects: {placed_objects}
-        Each object in the list has a name, center, size, size_after_rotation and rotation.
-        The size_after_rotation field is the original size of the bounding box with the applied rotation. This is to save you the trouble of doing the math yourself.
-        {intersection_data if len(intersection_object) > 0 else ""}
-        """
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "center": {
-                "type": "array",
-                "description": "The center of the object as a 3d vector.",
-                "items": {"type": "number"},
-            },
-            "rotation": {
-                "type": "array",
-                "description": "The rotation of the object as a 3d vector using degrees.",
-                "items": {"type": "number"},
-            },
-        },
-        "required": ["center", "rotation"],
-    }
-    global model
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt, str(constraints), str(placed_objects)],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": response_schema,
-            "system_instruction": system_instructions,
-        },
+YOUR TASK:
+1.  Analyze the Scene: Read the scene_description and the already_placed_objects list.
+2.  Analyze specific object: Look at the {object_name}. Ignore all other objects. Focus only on the {object_name} and check if it satisfies the constraints. Then update it's position and rotation in the output.
+3.  Adhere to Constraints: Ensure the placement satisfies all layout rules from the scene_description and the constraints list. But ALWAYS prioritize the scene_description, when there are contradictions. {intersection_prompt if len(intersection_object) > 0 else ""}
+4.  Output JSON: Generate a single, clean JSON object with the final position (center, 3 numbers) and rotation (3 numbers in degrees).
+INPUT DATA:
+Scene Description: {scene_description}
+Constraints: {constraints}
+Already Placed Objects: {placed_objects}
+Each object in the list has a name, center, size, size_after_rotation and rotation.
+The size_after_rotation field is the original size of the bounding box with the applied rotation. This is to save you the trouble of doing the math yourself.
+{intersection_data if len(intersection_object) > 0 else ""}
+
+Output (JSON):
+{Schema.to_str()}"""
+
+    llm = Llm(
+        "gemini-2.5-pro",
+        max_tokens=32768,
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
     )
-    obj = json.loads(response.text)
-    return obj
+    llm_output = llm(prompt, Schema, sys_prompt=system_instructions)
+    return llm_output.response.model_dump()
 
 
 def place_objects_from_list(
@@ -272,11 +268,11 @@ def place_objects_from_list(
     #     else: new_rotation = obj_transform["rotation"]
     #     output0.append({"guid": obj_data["guid"], "center": calculate_pivot_placement(obj_transform["center"], new_rotation, [a for a in obj_data["boundsCenter"]]),
     #                    "rotation": new_rotation, "scale_factor": obj_data["scale_factor"]})
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = dirname(abspath(__file__))
 
     # Build absolute path to placed_objects.json in the same directory
-    json_path = os.path.join(script_dir, "placed_objects.json")
-    json_data_path = os.path.join(script_dir, "placed_objects_data.json")
+    json_path = join(script_dir, "placed_objects.json")
+    json_data_path = join(script_dir, "placed_objects_data.json")
     if skip_refinement:
         # Write JSON
         with open(json_path, "w") as file:
@@ -345,13 +341,8 @@ def main():
         help="Override the number of different objects to use.",
         default="",
     )
-    parser.add_argument(
-        "--model", help="The gemini model used.", default="gemini-2.5-flash"
-    )
     args = parser.parse_args()
     skip_refinement = args.no_refinement
-    global model
-    model = args.model
     with open(EMBEDDINGS, "r") as file:
         embeddings_data = json.load(file)
 
@@ -384,16 +375,12 @@ def main():
             )
 
     place_objects_from_list(prompt, input_objects, skip_refinement)
-    script_path = os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__), "../rendering/convert_for_blender.py"
-        )
+    script_path = abspath(
+        join(dirname(__file__), "../rendering/convert_for_blender.py")
     )
     subprocess.run(["python", script_path], check=True)
-    script_path = os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__), "../rendering/render_layout.py"
-        )
+    script_path = abspath(
+        join(dirname(__file__), "../rendering/render_layout.py")
     )
     subprocess.run(
         ["blender", "--background", "--python", script_path], check=True

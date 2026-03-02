@@ -1,4 +1,9 @@
-google-genai==1.28.0
+json_repair
 numpy==2.3.2
+openai
+opencv-python-headless
 pillow==11.3.0
+pydantic
+rich
 scikit-learn==1.7.1
+torch

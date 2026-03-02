@@ -1,16 +1,12 @@
 import json
-import os
 import sys
+from os.path import abspath, dirname, exists, join
 
-import PIL.Image
-from google import genai
+from PIL import Image
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from config import API_KEY, DESCRIPTIONS, OBJ_DATA
-
-# Set your API key
-api_key = API_KEY
-client = genai.Client(api_key=api_key)
+sys.path.append(abspath(join(dirname(__file__), "..")))
+from config import API_KEY, BASE_URL, DESCRIPTIONS, OBJ_DATA
+from utils.llm import JsonResponseModel, Llm
 
 
 def get_structured_description(image_path1, image_path2, name):
@@ -26,47 +22,42 @@ def get_structured_description(image_path1, image_path2, name):
         and contextual properties
     """
     # Load the images
-    image1 = PIL.Image.open(image_path1)
-    image2 = PIL.Image.open(image_path2)
+    with Image.open(image_path1) as img1, Image.open(image_path2) as img2:
+        image1 = img1.convert("RGB")
+        image2 = img2.convert("RGB")
+
+    class Schema(JsonResponseModel):
+        Physical_properties: str
+        Functional_properties: str
+        Contextual_properties: str
+        name: str
 
     # Prepare the prompt for structured description
-    prompt = f"""
-    The two images show the same object from different angles/perspectives.
-    Please provide a detailed structured description of this object divided into these three categories:
-    
-    1. Physical properties (size, shape, color, material, parts/components)
-    2. Functional properties (purpose, how it's used, what it does)
-    3. Contextual properties (where it might be found, what settings it belongs in)
-    
-    You may use the name of the object as a hint, if it is helpful: {name}.
-    Also name what the object is don't copy the input name.
-    """
+    prompt = f"""\
+The two images show the same object from different angles/perspectives.
+Please provide a detailed structured description of this object divided into these three categories:
 
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "Physical properties": {"type": "string"},
-            "Functional properties": {"type": "string"},
-            "Contextual properties": {"type": "string"},
-            "name": {"type": "string"},
-        },
-        "required": [
-            "Physical properties",
-            "Functional properties",
-            "Contextual properties",
-            "name",
-        ],
-    }
+1. Physical properties (size, shape, color, material, parts/components)
+2. Functional properties (purpose, how it's used, what it does)
+3. Contextual properties (where it might be found, what settings it belongs in)
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[image1, image2, prompt],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": response_schema,
-        },
+Also name what the object is.
+
+Output (JSON):
+{Schema.to_str()}"""
+
+    llm = Llm(
+        "gemini-2.5-flash-lite",
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
     )
-    return json.loads(response.text)
+    llm_output = llm(
+        prompt, Schema, images=[image1, image2], image_detail="low"
+    )
+    response = llm_output.response.model_dump()
+    return {k.replace("_", " "): v for k, v in response.items()}
 
 
 def process_prefabs(json_file_path):
@@ -89,7 +80,7 @@ def process_prefabs(json_file_path):
 
     # Check if description file already exists and load it
     existing_descriptions = {}
-    if os.path.exists(output_file_path):
+    if exists(output_file_path):
         print(f"Found existing descriptions file: {output_file_path}")
         with open(output_file_path, "r") as file:
             try:

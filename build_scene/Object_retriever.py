@@ -1,81 +1,60 @@
-import json
+import sys
+from os.path import abspath, dirname, join
 
 import numpy as np
-from google import genai
 from sklearn.metrics.pairwise import cosine_similarity
-from utils import Attributes, get_attr_from_guid
+from utilities import Attributes, get_attr_from_guid
 
-from config import API_KEY
+sys.path.append(abspath(join(dirname(__file__), "..")))
+from config import API_KEY, BASE_URL
 from preprocessing.CreateEmbeddings import get_embedding
-
-# Set your API key
-api_key = API_KEY
-client = genai.Client(api_key=api_key)
+from utils.llm import JsonResponseModel, Llm
 
 
 def get_scene_objects(scene_description, num_obj):
-    text_prompt = f"Given the following scene description: {scene_description}"
-    prompt = f"""
-    {text_prompt}
-    Please follow these steps:
-    Step 1: Identify {num_obj} objects in the scene. If you think there are more objects focus on the most important ones. Try to be a bit broad and don't pick objects that that are part of any other objects that you picked. E.g. Don't pick a bed and then pillows and blanket.
-    The objects can't be entire rooms or places. The objects also cannot be walls, floors, ceilings, doors, curtains, windows or anything else that has to do with the frame of the room. It also can't be the ground, water, sky or the sun.
-    Step 2: Without the context of the scene, describe each object, focusing on its physical properties, functional properties, and contextual properties. Be detailed.
-    Step 3: Tell me how many duplicates of the object are required.
-    """
+    class Item(JsonResponseModel):
+        name: str
+        Physical_properties: str
+        Functional_properties: str
+        Contextual_properties: str
+        quantity: int
 
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "objects": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "The name of the object.",
-                        },
-                        "Physical properties": {
-                            "type": "string",
-                            "description": "The description of the physical properties of the object. These may include color, shape, material and texture.",
-                        },
-                        "Functional properties": {
-                            "type": "string",
-                            "description": "The description of the functional properties of the object. What are its purpose, how it's used, and what it does?",
-                        },
-                        "Contextual properties": {
-                            "type": "string",
-                            "description": "The description of the contextual properties of the object. In what settings is it used, in which context might it be found, and what settings it belongs in?",
-                        },
-                        "quantity": {
-                            "type": "number",
-                            "description": "The amount of this object.",
-                        },
-                    },
-                    "required": [
-                        "name",
-                        "Physical properties",
-                        "Functional properties",
-                        "Contextual properties",
-                        "quantity",
-                    ],
-                },
-            }
-        },
-        "required": ["objects"],
-    }
+    class Schema(JsonResponseModel):
+        objects: list[Item]
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": response_schema,
-        },
+    prompt = f"""\
+Given the following scene description: {scene_description}
+
+Please follow these steps:
+Step 1: Identify """
+    if num_obj != "":
+        num_obj = f"{num_obj} "
+    prompt += f"{num_obj}objects in the scene. "
+    if num_obj != "":
+        prompt += "If you think there are more objects focus on the most important ones. "
+    prompt += f"""\
+Try to be a bit broad and don't pick objects that are part of any other objects that you picked. E.g. Don't pick a bed and then pillows and blanket.
+The objects can't be entire rooms or places. The objects also cannot be walls, floors, ceilings, doors, curtains, windows or anything else that has to do with the frame of the room. It also can't be the ground, water, sky or the sun.
+Step 2: Without the context of the scene, describe each object, focusing on its physical properties (color, shape, material, texture, etc.), functional properties (what are its purpose, how it's used, and what it does?), and contextual properties (in what settings is it used, in which context might it be found, and what settings it belongs in?). Be detailed.
+Step 3: Tell me how many duplicates of the object are required.
+
+Output (JSON):
+{Schema.to_str()}"""
+
+    llm = Llm(
+        "gemini-2.5-pro",
+        max_tokens=32768,
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
     )
-
-    return json.loads(response.text)
+    llm_output = llm(prompt, Schema)
+    objects = [
+        {k.replace("_", " "): v for k, v in item.model_dump().items()}
+        for item in llm_output.response.objects
+    ]
+    return {"objects": objects}
 
 
 def find_assets_for_scene(scene_description, embeddings_data, top_n):
@@ -176,18 +155,28 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
 
 
 def pick_best_choice(target_object, top5):
-    prompt = """
-    You are given a description of a target object and a list of five objects with their descriptions. Your task is to tell me which one of the five objects in the list matches the description of the target object best. 
-    Do this by giving me a number between 1 and 5, which serves as an index of the list.
-    If you think that no object in the list can be can be used as a substitution for the target object, please output a 0.
-    """
+    class Schema(JsonResponseModel):
+        index: int
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[prompt, str(target_object), str(top5)],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": int,
-        },
+    prompt = f"""\
+You are given a description of a target object: {target_object}
+
+You are also given a list of five objects with their descriptions: {top5}
+
+Your task is to tell me which one of the five objects in the list matches the description of the target object best. 
+Do this by giving me a number between 1 and 5, which serves as an index of the list.
+If you think that no object in the list can be can be used as a substitution for the target object, please output a 0.
+
+Output (JSON):
+{Schema.to_str()}"""
+
+    llm = Llm(
+        "gemini-2.5-pro",
+        max_tokens=32768,
+        timeout=600,
+        max_retries=5,
+        api_key=API_KEY,
+        base_url=BASE_URL,
     )
-    return int(response.text)
+    llm_output = llm(prompt, Schema)
+    return llm_output.response.index

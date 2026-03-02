@@ -28,6 +28,8 @@ wall_material_name = os.path.basename(wall_path)[:-9]
 
 
 output_folder = RENDERS
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder, exist_ok=True)
 
 with bpy.data.libraries.load(floor_path, link=False) as (data_from, data_to):
     if material_name in data_from.materials:
