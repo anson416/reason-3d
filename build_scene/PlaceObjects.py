@@ -343,6 +343,8 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     scene_dir = join(RESULTS, timestamp)
     os.makedirs(scene_dir, exist_ok=True)
+    with open(join(scene_dir, "prompt.txt"), "w") as file:
+        file.write(args.prompt)
 
     with open(EMBEDDINGS, "r") as file:
         embeddings_data = json.load(file)
