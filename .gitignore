@@ -2,6 +2,7 @@
 data/
 results/
 CLAUDE.md
+test*.py
 
 # Ignore JetBrains IDE settings
 .idea/
