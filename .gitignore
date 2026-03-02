@@ -1,5 +1,7 @@
+.claude/
 data/
 results/
+CLAUDE.md
 
 # Ignore JetBrains IDE settings
 .idea/

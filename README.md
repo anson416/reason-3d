@@ -11,11 +11,13 @@ Accepted at MAR @ NeurIPS 2025 and AAAI 2026
 </div>
 
 ---
+
 ## 📄 [Sample Page](https://lucala.github.io/reason-3d-demo/)
 
 ## Getting Started
 
 ### 1. Clone the Repository
+
 Start by cloning the project files from GitHub.
 
 ### 2\. Install Dependencies
@@ -40,12 +42,12 @@ Open **`config.py`** to specify file paths and add your **Gemini API key**. If y
 
 Place your 3D object files into the asset directory defined in `config.py`. All filenames must be unique. The following file types are supported:
 
-  - `.fbx`
-  - `.obj`
-  - `.glb`
-  - `.blend`
+- `.fbx`
+- `.obj`
+- `.glb`
+- `.blend`
 
------
+---
 
 ## How to Use
 
@@ -57,7 +59,7 @@ Run the preprocessing script to prepare your assets.
 python preprocess.py
 ```
 
-*Optional:* Use the `--skip-rotation` flag to bypass automatic object alignment if your objects are already correctly oriented.
+_Optional:_ Use the `--skip-rotation` flag to bypass automatic object alignment if your objects are already correctly oriented.
 
 ### Step 2: Build the Scene
 
@@ -66,17 +68,16 @@ Execute the script to have Gemini build and arrange the scene.
 ```bash
 python build_scene/PlaceObjects.py
 ```
-*Required Flags:*
 
-  - `--prompt [prompt]`: Input prompt
+_Required Flags:_
 
-*Optional Flags:*
+- `--prompt [prompt]`: Input prompt
 
-  - `--model [model_name]`: Specify a different Gemini model.
-  - `--num-objects [number]`: Override the default number of objects to be used in the scene.
-  - `--no-refinement`: Skip the refinement step of the placement process.
+_Optional Flags:_
+
+- `--num-objects [number]`: Override the default number of objects to be used in the scene.
+- `--no-refinement`: Skip the refinement step of the placement process.
 
 ### Step 3: Rendering
 
 The final scene will be rendered in Blender, complete with a wooden floor. The rendered images will be saved in the **`results/final_renders`** directory.
-
