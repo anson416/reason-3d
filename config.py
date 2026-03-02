@@ -1,7 +1,8 @@
 import os
 
 # Global variables
-API_KEY = ""
+API_KEY = os.environ.get("CA_API_KEY3")
+BASE_URL = "https://api.chatanywhere.tech/v1"
 
 # Paths
 git_root = os.path.dirname(os.path.abspath(__file__))
@@ -28,4 +29,65 @@ OUTPUT = os.path.join(RESULTS, "raw_outputs")  # Raw pipeline output
 BLENDER_FILE = os.path.join(
     RESULTS, "raw_blender.json"
 )  # Converted for blender
-RENDERS = os.path.join(RESULTS, "final_renders")  # Final renders
+RENDERS = os.path.join(RESULTS, "final_renders")  # Final renders (legacy)
+
+# === Rendering Constants ===
+ColorRGB = tuple[int, int, int]
+
+HDRI_DIR = os.path.join(git_root, "rendering", "hdri")
+RESOLUTIONS: list[int] = [
+    # 224,
+    # 256,
+    # 384,
+    # 448,
+    512,
+    # 640,
+    # 768,
+    # 1024,
+]
+BACKGROUND_COLORS: list[ColorRGB] = [
+    # (0, 0, 0),
+    # (18, 18, 18),  # Dark mode
+    # (65, 65, 65),  # 5% physically
+    # (117, 117, 117),  # 18% physically
+    # (128, 128, 128),
+    # (186, 186, 186),  # 50% physically
+    # (204, 204, 204),  # 80% visually
+    (255, 255, 255),
+]
+FOCAL_LENGTHS: list[int] = [
+    # 24,
+    # 35,
+    50,
+    # 85,
+    # 100,
+    # 200,
+]
+PITCHS: list[int] = [
+    # 60,
+    90,
+]
+YAWS: list[int] = [
+    0,
+    # 30,
+    # 60,
+    # 90,
+    # 120,
+    # 150,
+    # 180,
+    # 210,
+    # 240,
+    # 270,
+    # 300,
+    # 330,
+]
+HDRIS: list[str] = [
+    "city",
+    # "courtyard",
+    # "forest",
+    # "interior",
+    # "night",
+    # "studio",
+    # "sunrise",
+    # "sunset",
+]

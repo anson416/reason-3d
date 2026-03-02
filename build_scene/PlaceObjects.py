@@ -1,8 +1,10 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
+from datetime import datetime
 from os.path import abspath, dirname, join
 
 sys.path.append(abspath(join(dirname(__file__), "..")))
@@ -15,7 +17,7 @@ from utilities import (
     get_rotated_bounding_box,
 )
 
-from config import API_KEY, BASE_URL, EMBEDDINGS, ROTATION_DATA
+from config import API_KEY, BASE_URL, EMBEDDINGS, RESULTS, ROTATION_DATA
 from utils.llm import JsonResponseModel, Llm
 
 
@@ -214,7 +216,7 @@ Output (JSON):
 
 
 def place_objects_from_list(
-    scene_description, obj_list, skip_refinement=False
+    scene_description, obj_list, skip_refinement=False, scene_dir=None
 ):
     with open(ROTATION_DATA, "r") as file:
         rotation_data = json.load(file)
@@ -261,20 +263,15 @@ def place_objects_from_list(
         )
     # name, size, center, rotation, size_after_rotation
 
-    # for obj_data, obj_transform in zip(objs, placed_objects):
-    #     rots = [a["rotation"] for a in rotation_data if a["guid"] == obj_data["guid"]]
-    #     if len(rots)>0:
-    #         new_rotation = [a + b for a, b in zip(obj_transform["rotation"], rots[0])]
-    #     else: new_rotation = obj_transform["rotation"]
-    #     output0.append({"guid": obj_data["guid"], "center": calculate_pivot_placement(obj_transform["center"], new_rotation, [a for a in obj_data["boundsCenter"]]),
-    #                    "rotation": new_rotation, "scale_factor": obj_data["scale_factor"]})
-    script_dir = dirname(abspath(__file__))
+    if scene_dir is not None:
+        json_path = join(scene_dir, "placed_objects.json")
+        json_data_path = join(scene_dir, "placed_objects_data.json")
+    else:
+        script_dir = dirname(abspath(__file__))
+        json_path = join(script_dir, "placed_objects.json")
+        json_data_path = join(script_dir, "placed_objects_data.json")
 
-    # Build absolute path to placed_objects.json in the same directory
-    json_path = join(script_dir, "placed_objects.json")
-    json_data_path = join(script_dir, "placed_objects_data.json")
     if skip_refinement:
-        # Write JSON
         with open(json_path, "w") as file:
             json.dump(placed_objects, file, indent=4)
         with open(json_data_path, "w") as file:
@@ -313,13 +310,6 @@ def place_objects_from_list(
             obj["size"], new_values["rotation"]
         )
 
-    # for obj_data, obj_transform in zip(objs, placed_objects):
-    #     rots = [a["rotation"] for a in rotation_data if a["guid"] == obj_data["guid"]]
-    #     if len(rots)>0:
-    #         obj_transform["rotation"] = [a + b for a, b in zip(obj_transform["rotation"], rots[0])]
-    #     output.append({"guid": obj_data["guid"], "center": calculate_pivot_placement(obj_transform["center"],obj_transform["rotation"], [a for a in obj_data["boundsCenter"]]),
-    #                    "rotation": obj_transform["rotation"], "scale_factor": obj_data["scale_factor"]})
-
     with open(json_path, "w") as file:
         json.dump(placed_objects, file, indent=4)
     with open(json_data_path, "w") as file:
@@ -341,8 +331,19 @@ def main():
         help="Override the number of different objects to use.",
         default="",
     )
+    parser.add_argument(
+        "--skip-render",
+        help="Skip the rendering step (generate scene data only).",
+        action="store_true",
+    )
     args = parser.parse_args()
     skip_refinement = args.no_refinement
+
+    # Create timestamped output directory
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    scene_dir = join(RESULTS, timestamp)
+    os.makedirs(scene_dir, exist_ok=True)
+
     with open(EMBEDDINGS, "r") as file:
         embeddings_data = json.load(file)
 
@@ -374,17 +375,26 @@ def main():
                 }
             )
 
-    place_objects_from_list(prompt, input_objects, skip_refinement)
+    place_objects_from_list(
+        prompt, input_objects, skip_refinement, scene_dir=scene_dir
+    )
+
+    # Convert for Blender
     script_path = abspath(
         join(dirname(__file__), "../rendering/convert_for_blender.py")
     )
-    subprocess.run(["python", script_path], check=True)
-    script_path = abspath(
-        join(dirname(__file__), "../rendering/render_layout.py")
-    )
     subprocess.run(
-        ["blender", "--background", "--python", script_path], check=True
+        ["python", script_path, "--scene-dir", scene_dir], check=True
     )
+
+    if not args.skip_render:
+        # Render via render_scene.py (handles Blender + background compositing)
+        script_path = abspath(
+            join(dirname(__file__), "../rendering/render_scene.py")
+        )
+        subprocess.run(["python", script_path, scene_dir], check=True)
+
+    print(f"Scene outputs saved to: {scene_dir}")
 
 
 if __name__ == "__main__":

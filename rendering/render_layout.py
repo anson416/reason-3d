@@ -1,16 +1,36 @@
+import argparse
 import json
 import math
 import os
 import sys
+from itertools import product
 
 import bpy
 from mathutils import Euler, Vector
 
+# === PARSE ARGS (after Blender's -- separator) ===
+argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--scene-dir", required=True, help="Path to timestamped scene dir"
+)
+args = parser.parse_args(argv)
+
+scene_dir = args.scene_dir
+
 sys.path.append(os.path.abspath("."))
-from config import ASSETS, BLENDER_FILE, RENDERS
+from config import (
+    ASSETS,
+    FOCAL_LENGTHS,
+    HDRI_DIR,
+    HDRIS,
+    PITCHS,
+    RESOLUTIONS,
+    YAWS,
+)
 
 # === CONFIG ===
-unity_layout_file = BLENDER_FILE
+unity_layout_file = os.path.join(scene_dir, "raw_blender.json")
 asset_base_path = ASSETS
 material_dir = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "materials"
@@ -26,10 +46,8 @@ wall_path = wall_blend_filepath
 material_name = os.path.basename(floor_path)[:-9]
 wall_material_name = os.path.basename(wall_path)[:-9]
 
-
-output_folder = RENDERS
-if not os.path.exists(output_folder):
-    os.makedirs(output_folder, exist_ok=True)
+renderings_dir = os.path.join(scene_dir, "renderings")
+os.makedirs(renderings_dir, exist_ok=True)
 
 with bpy.data.libraries.load(floor_path, link=False) as (data_from, data_to):
     if material_name in data_from.materials:
@@ -72,10 +90,10 @@ for info in layout:
             break
 
     if not file_path:
-        print(f"❌ No supported file found for UID: {uid}")
+        print(f"No supported file found for UID: {uid}")
         continue
     else:
-        print(f"📦 Importing: {file_path}")
+        print(f"Importing: {file_path}")
 
         # Track objects before import
         objects_before_import = set(bpy.context.scene.objects)
@@ -103,16 +121,10 @@ for info in layout:
     # 1. Filter out non-mesh objects and identify the target objects for joining
     mesh_objects_to_join = [obj for obj in new_objects if obj.type == "MESH"]
 
-    # if len(mesh_objects_to_join) < 2:
-    #     print("Not enough mesh objects to perform a join operation.")
-
     # 2. Deselect everything
     bpy.ops.object.select_all(action="DESELECT")
 
     # 3. Choose the active object for the join operation
-    # It's often good practice to pick an object that is NOT parented,
-    # or clear its parent beforehand.
-    # Let's pick the first eligible mesh object as the active one.
     active_join_obj = None
     for obj in mesh_objects_to_join:
         if obj.parent is None:  # Prioritize unparented objects
@@ -126,46 +138,35 @@ for info in layout:
         print(
             f"Clearing parent of active object '{active_join_obj.name}' before join."
         )
-        # Ensure it's active and selected for the parent_clear operator
         bpy.context.view_layer.objects.active = active_join_obj
         active_join_obj.select_set(True)
         bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
-        active_join_obj.select_set(False)  # Deselect it again for now
+        active_join_obj.select_set(False)
 
-    # Now select all objects to be joined, ensuring the chosen active object is last selected/set active
-    bpy.context.view_layer.objects.active = (
-        active_join_obj  # Make it active first
-    )
-    active_join_obj.select_set(True)  # Select it
+    # Now select all objects to be joined
+    bpy.context.view_layer.objects.active = active_join_obj
+    active_join_obj.select_set(True)
 
     for obj in mesh_objects_to_join:
         if obj != active_join_obj:
-            # Clear parent of other objects to be joined (keeping their world transform)
             if obj.parent:
                 print(f"Clearing parent of object '{obj.name}' before join.")
-                # To clear parent, obj must be active and selected
-                current_active = (
-                    bpy.context.view_layer.objects.active
-                )  # Store current active
-                current_selected = [
-                    o for o in bpy.context.selected_objects
-                ]  # Store current selection
+                current_active = bpy.context.view_layer.objects.active
+                current_selected = [o for o in bpy.context.selected_objects]
 
                 bpy.ops.object.select_all(action="DESELECT")
                 bpy.context.view_layer.objects.active = obj
                 obj.select_set(True)
                 bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
 
-                # Restore previous active and selection for the join op
                 bpy.ops.object.select_all(action="DESELECT")
                 for sel_obj in current_selected:
                     sel_obj.select_set(True)
                 bpy.context.view_layer.objects.active = current_active
 
-            obj.select_set(True)  # Select the object for joining
+            obj.select_set(True)
 
     try:
-        # Switch to Object Mode if not already to ensure join operation works
         if bpy.context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -174,56 +175,39 @@ for info in layout:
         loaded = bpy.context.view_layer.objects.active
     except Exception as e:
         print(f"Error joining objects: {e}. Ignoring the join operation.")
-        loaded = None  # Set to None if join failed
+        loaded = None
 
-    # Might be unnecessary
     bpy.ops.object.select_all(action="DESELECT")
     loaded.select_set(True)
-    # 2. Calculate the world-space bounding box center of the object
-    # obj.bound_box gives local coordinates of the 8 corners
-    # obj.matrix_world transforms these local coordinates to world coordinates
     bbox_corners_world = [
         loaded.matrix_world @ Vector(corner) for corner in loaded.bound_box
     ]
     bbox_center_world = sum(bbox_corners_world, Vector()) / 8
 
-    # 3. Set the 3D cursor to this calculated world-space center
     bpy.context.scene.cursor.location = bbox_center_world
-
-    # 4. Set the object's origin to the 3D cursor
-    # This operation is generally less context-sensitive than view3d operators
     bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
-    # bpy.ops.object.origin_set(type='GEOMETRY_ORIGIN', center='BOUNDS')
     bpy.ops.transform.rotate(value=-math.radians(pre_rot_rad), orient_axis="Z")
-    # Apply transform here.
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
     bpy.context.object.rotation_mode = "YXZ"
     for i in range(3):
         loaded.rotation_euler[i] += rotation_rad[i]
 
-    # Set position
     loaded.location = position
     print(loaded.location)
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
 
 # === ADD DYNAMIC FLOOR PLANE ===
-# Compute bounds from all mesh objects
 all_objs = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
 
 if not all_objs:
     raise RuntimeError("No mesh objects found in scene.")
 
-# Let's refine the bound_box calculation for more accuracy.
-# This calculates the global min/max for all objects.
 bbox_min = Vector((float("inf"), float("inf"), float("inf")))
 bbox_max = Vector((float("-inf"), float("-inf"), float("-inf")))
 
 for obj in all_objs:
-    # Ensure object is in world space for bound_box calculation
-    bpy.context.view_layer.update()  # Update scene data for correct bounds
-
-    # Iterate through object's bounding box corners and transform them to world space
+    bpy.context.view_layer.update()
     for corner in obj.bound_box:
         world_corner = obj.matrix_world @ Vector(corner)
         for i in range(3):
@@ -233,14 +217,9 @@ for obj in all_objs:
 min_coord = bbox_min
 max_coord = bbox_max
 
-center = (max_coord - min_coord) / 2
-min_z = min_coord.z  # This is the absolute lowest point of any object
-
-# Calculate the center of the bounding box for placing the floor
 floor_center_x = (min_coord.x + max_coord.x) / 2
 floor_center_y = (min_coord.y + max_coord.y) / 2
 
-# Calculate extents
 x_extent = max_coord.x - min_coord.x
 y_extent = max_coord.y - min_coord.y
 
@@ -251,11 +230,8 @@ floor = bpy.context.active_object
 floor.name = "Floor"
 floor.scale = (x_extent, y_extent, 1)
 
-
-# Assign material to floor object
-floor = bpy.context.object  # Or explicitly: bpy.data.objects["Floor"]
+floor = bpy.context.object
 if floor.data.materials:
-    # floor.data.materials[0] = mat
     floor.data.materials[0] = bpy.data.materials[material_name]
 else:
     floor.data.materials.append(bpy.data.materials[material_name])
@@ -263,37 +239,27 @@ else:
 
 # === ADD FOUR WALLS ===
 
-wall_height = 2.7  # Add some height margin
+wall_height = 2.7
 scene_width = max_coord.x - min_coord.x
 scene_depth = max_coord.y - min_coord.y
 
-
-# The name of the existing Poly Haven material you want to use for the front faces.
-# IMPORTANT: This material must already be present in your Blender file.
-polyhaven_material_name = (
-    wall_material_name  # <-- Make sure this matches the name in your file
-)
-
-# --- Check for the existence of the Poly Haven material ---
+polyhaven_material_name = wall_material_name
 polyhaven_mat = bpy.data.materials.get(polyhaven_material_name)
 
 if not polyhaven_mat:
-    # If the source material doesn't exist, stop and raise an error.
     raise NameError(
         f"Error: Material '{polyhaven_material_name}' not found. "
         "Please ensure it's loaded in the blend file before running the script."
     )
 
 
-def create_wall(
-    name, location, rotation, length_scale
-):  # Add length_scale parameter
+def create_wall(name, location, rotation, length_scale):
     bpy.ops.mesh.primitive_plane_add(
         size=1, location=location, rotation=rotation
     )
     wall = bpy.context.active_object
     wall.name = name
-    wall.scale = (length_scale, wall_height, 1)  # Use length_scale for width
+    wall.scale = (length_scale, wall_height, 1)
     print("wall instantiated")
     if wall.data.materials:
         wall.data.materials[0] = polyhaven_mat
@@ -317,90 +283,156 @@ def create_wall(
 # create_wall("RightWall", (x / 2 + offset_x, offset_y, wall_height / 2), (math.radians(90), 0, math.radians(-90)), y)
 # ========================
 
-# === SET UP CAMERA ===
-# Add camera above all objects
-scene = bpy.context.scene
-cam_data = bpy.data.cameras.new("OverheadCamera")
-cam_obj = bpy.data.objects.new("OverheadCamera", cam_data)
-scene.collection.objects.link(cam_obj)
-scene.camera = cam_obj
 
-# Calculate scene bounds
+# === COMPUTE BOUNDING SPHERE FOR CAMERA POSITIONING ===
 all_objs = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
 if not all_objs:
     raise RuntimeError("No mesh objects found in scene.")
 
-min_coord = Vector(
-    (
-        min(o.location.x for o in all_objs),
-        min(o.location.y for o in all_objs),
-        min(o.location.z for o in all_objs),
-    )
-)
-max_coord = Vector(
-    (
-        max(o.location.x for o in all_objs),
-        max(o.location.y for o in all_objs),
-        max(o.location.z for o in all_objs),
-    )
-)
-center = (min_coord + max_coord) / 2
-width = (max_coord - min_coord).length
-print(width, width)
-# === SET CAMERA: ANGLED SIDE VIEW ===
-cam_data.type = "PERSP"
-cam_obj.location = (
-    floor_center_x - scene_width * 1.8,
-    floor_center_y - scene_width * 1.8,
-    scene_width * 1.8,
-)
+bs_min = Vector((float("inf"), float("inf"), float("inf")))
+bs_max = Vector((float("-inf"), float("-inf"), float("-inf")))
 
-# Point camera toward the center of the scene
-direction = Vector((floor_center_x, floor_center_y, 0)) - cam_obj.location
-cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+for obj in all_objs:
+    bpy.context.view_layer.update()
+    for corner in obj.bound_box:
+        world_corner = obj.matrix_world @ Vector(corner)
+        for i in range(3):
+            bs_min[i] = min(bs_min[i], world_corner[i])
+            bs_max[i] = max(bs_max[i], world_corner[i])
+
+scene_center = (bs_min + bs_max) / 2
+scene_radius = (bs_max - scene_center).length
+
 
 # === DELETE ALL EXISTING LIGHTS ===
 for obj in [o for o in bpy.data.objects if o.type == "LIGHT"]:
     bpy.data.objects.remove(obj, do_unlink=True)
 
-# === SET UP LIGHT ===
+# === SET UP AREA LIGHT ===
+scene = bpy.context.scene
 
-scene.world.use_nodes = True
-bg = scene.world.node_tree.nodes["Background"]
-bg.inputs[1].default_value = 0.1
-
-# Create new Light data of type 'AREA'
 area_light_name = "RoomAreaLight"
 light_data = bpy.data.lights.new(name=area_light_name, type="AREA")
+light_data.energy = 1000
+light_data.size = 10
 
-# Set the energy (intensity) of the area light
-# Area lights usually need much higher energy than point lights for similar brightness
-light_data.energy = 1000  # Adjust this value (e.g., from 1000 to 10000) as needed for brightness
-# Larger size = softer shadows, Smaller size = sharper shadows
-light_data.size = (
-    10  # Example size in Blender Units (meters). Adjust as desired.
-)
-
-# Create a new object with the area light data
 light = bpy.data.objects.new(name=area_light_name, object_data=light_data)
-
-
 scene.collection.objects.link(light)
-
 light.location = (floor_center_x, floor_center_y, 4)
-# === RENDER SETTINGS ===
-scene.render.engine = "CYCLES"  # Or 'BLENDER_EEVEE'
-bpy.context.scene.cycles.samples = 128
-bpy.context.view_layer.use_pass_ambient_occlusion = True
-# scene.render.filepath = output_path
-scene.render.image_settings.file_format = "PNG"
-scene.render.image_settings.color_mode = "RGBA"
-scene.render.resolution_x = 1024
-scene.render.resolution_y = 1024
 
-# === ENABLE TRANSPARENT BACKGROUND ===
-scene.render.film_transparent = True
 
-# === RENDER ===
-scene.render.filepath = os.path.join(output_folder, "final_render.png")
-bpy.ops.render.render(write_still=True)
+# === GPU / CYCLES SETUP ===
+def setup_cycles():
+    cycles_prefs = bpy.context.preferences.addons["cycles"].preferences
+    for device_type in ["OPTIX", "CUDA", "HIP", "METAL", "NONE"]:
+        try:
+            cycles_prefs.compute_device_type = device_type
+            break
+        except TypeError:
+            continue
+    cycles_prefs.get_devices()
+    gpu_available = False
+    for device in cycles_prefs.devices:
+        if device.type == "CPU":
+            device.use = False
+        else:
+            device.use = True
+            gpu_available = True
+    if not gpu_available:
+        for device in cycles_prefs.devices:
+            if device.type == "CPU":
+                device.use = True
+                break
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "GPU" if gpu_available else "CPU"
+    scene.cycles.use_adaptive_sampling = True
+    scene.cycles.adaptive_threshold = 0.02
+    scene.cycles.samples = 128
+    scene.cycles.use_denoising = True
+    scene.render.film_transparent = True
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+
+
+setup_cycles()
+
+
+# === HDRI SETUP HELPER ===
+def set_hdri(hdri_name, strength=0.5):
+    world = scene.world
+    if world is None:
+        bpy.ops.world.new()
+        world = bpy.context.scene.world = bpy.data.worlds[-1]
+    world.use_nodes = True
+    nodes = world.node_tree.nodes
+    links = world.node_tree.links
+
+    # Remove existing environment texture nodes
+    for node in list(nodes):
+        if node.type == "TEX_ENVIRONMENT":
+            nodes.remove(node)
+
+    bg = nodes["Background"]
+    bg.inputs[1].default_value = strength
+
+    env_path = os.path.join(HDRI_DIR, f"{hdri_name}.exr")
+    env_node = nodes.new("ShaderNodeTexEnvironment")
+    env_node.image = bpy.data.images.load(env_path, check_existing=True)
+    links.new(env_node.outputs[0], bg.inputs[0])
+
+
+# === CAMERA SETUP HELPER ===
+def set_camera(pitch_deg, yaw_deg, focal_length):
+    # Remove existing cameras
+    for obj in [o for o in bpy.data.objects if o.type == "CAMERA"]:
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+    cam_data = bpy.data.cameras.new("RenderCamera")
+    cam_obj = bpy.data.objects.new("RenderCamera", cam_data)
+    scene.collection.objects.link(cam_obj)
+    scene.camera = cam_obj
+
+    cam_data.type = "PERSP"
+    cam_data.lens_unit = "MILLIMETERS"
+    cam_data.lens = focal_length
+
+    # Camera distance from bounding sphere
+    half_fov = cam_data.angle / 2
+    distance = (
+        scene_radius / math.sin(half_fov) if half_fov > 0 else scene_radius * 3
+    )
+
+    # Position camera using pitch/yaw (spherical coordinates)
+    pitch_rad = math.radians(pitch_deg)
+    yaw_rad = math.radians(yaw_deg)
+
+    # Spherical to Cartesian: pitch=0 is horizontal, pitch=90 is top-down
+    cam_x = scene_center.x + distance * math.cos(pitch_rad) * math.sin(yaw_rad)
+    cam_y = scene_center.y - distance * math.cos(pitch_rad) * math.cos(yaw_rad)
+    cam_z = scene_center.z + distance * math.sin(pitch_rad)
+
+    cam_obj.location = (cam_x, cam_y, cam_z)
+
+    # Point camera toward scene center
+    direction = scene_center - cam_obj.location
+    cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+    cam_data.clip_start = 0.01
+    cam_data.clip_end = distance * 3
+
+
+# === RENDER LOOP ===
+for hdri in HDRIS:
+    set_hdri(hdri)
+    for res, focal, pitch, yaw in product(
+        RESOLUTIONS, FOCAL_LENGTHS, PITCHS, YAWS
+    ):
+        set_camera(pitch, yaw, focal)
+        scene.render.resolution_x = res
+        scene.render.resolution_y = res
+        filename = f"render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png"
+        scene.render.filepath = os.path.join(renderings_dir, filename)
+        print(f"Rendering: {filename}")
+        bpy.ops.render.render(write_still=True)
+
+print(f"All renders saved to: {renderings_dir}")
