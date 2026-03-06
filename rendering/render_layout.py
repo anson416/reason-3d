@@ -8,16 +8,6 @@ from itertools import product
 import bpy
 from mathutils import Euler, Vector
 
-# === PARSE ARGS (after Blender's -- separator) ===
-argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--scene-dir", required=True, help="Path to timestamped scene dir"
-)
-args = parser.parse_args(argv)
-
-scene_dir = args.scene_dir
-
 sys.path.append(os.path.abspath("."))
 from config import (
     ASSETS,
@@ -28,6 +18,17 @@ from config import (
     RESOLUTIONS,
     YAWS,
 )
+
+# === PARSE ARGS (after Blender's -- separator) ===
+argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--scene-dir", required=True, help="Path to timestamped scene dir"
+)
+args = parser.parse_args(argv)
+
+scene_dir = args.scene_dir
+
 
 # === CONFIG ===
 unity_layout_file = os.path.join(scene_dir, "raw_blender.json")
@@ -406,16 +407,37 @@ def set_camera(pitch_deg, yaw_deg, focal_length):
     pitch_rad = math.radians(pitch_deg)
     yaw_rad = math.radians(yaw_deg)
 
-    # Spherical to Cartesian: pitch=0 is horizontal, pitch=90 is top-down
-    cam_x = scene_center.x + distance * math.cos(pitch_rad) * math.sin(yaw_rad)
-    cam_y = scene_center.y - distance * math.cos(pitch_rad) * math.cos(yaw_rad)
-    cam_z = scene_center.z + distance * math.sin(pitch_rad)
+    # Place camera at yaw=0 (looking along -Y), then rotate by yaw around Z
+    # This avoids gimbal lock when pitch=90 (top-down), where cos(pitch)=0
+    # would otherwise zero out the yaw contribution.
+    local_x = 0.0
+    local_y = -distance * math.cos(pitch_rad)
+    local_z = distance * math.sin(pitch_rad)
+
+    # Rotate the offset around Z by yaw
+    cam_x = (
+        scene_center.x
+        + local_x * math.cos(yaw_rad)
+        - local_y * math.sin(yaw_rad)
+    )
+    cam_y = (
+        scene_center.y
+        + local_x * math.sin(yaw_rad)
+        + local_y * math.cos(yaw_rad)
+    )
+    cam_z = scene_center.z + local_z
 
     cam_obj.location = (cam_x, cam_y, cam_z)
 
     # Point camera toward scene center
     direction = scene_center - cam_obj.location
-    cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+    rot_quat = direction.to_track_quat("-Z", "Y")
+    # For top-down (or near top-down) views, apply yaw manually since
+    # to_track_quat cannot disambiguate the up-axis roll.
+    if abs(pitch_deg) >= 89.0:
+        yaw_euler = Euler((0, 0, yaw_rad), "XYZ")
+        rot_quat = rot_quat @ yaw_euler.to_quaternion()
+    cam_obj.rotation_euler = rot_quat.to_euler()
 
     cam_data.clip_start = 0.01
     cam_data.clip_end = distance * 3
