@@ -443,12 +443,20 @@ def set_camera(pitch_deg, yaw_deg, focal_length):
     cam_data.clip_end = distance * 3
 
 
-# === RENDER LOOP ===
-for hdri in HDRIS:
+# === RENDER LOOP (OFAT: paper Table 1, not a full Cartesian product) ===
+from config import ofat_camera_configs  # noqa: E402
+
+# Group configs by HDRI so the (expensive) environment-map swap happens once
+# per HDRI rather than per render.
+_configs = ofat_camera_configs()
+_by_hdri: dict[str, list[dict]] = {}
+for _c in _configs:
+    _by_hdri.setdefault(_c["hdri"], []).append(_c)
+
+for hdri, cfgs in _by_hdri.items():
     set_hdri(hdri)
-    for res, focal, pitch, yaw in product(
-        RESOLUTIONS, FOCAL_LENGTHS, PITCHS, YAWS
-    ):
+    for c in cfgs:
+        res, focal, pitch, yaw = c["res"], c["focal"], c["pitch"], c["yaw"]
         set_camera(pitch, yaw, focal)
         scene.render.resolution_x = res
         scene.render.resolution_y = res

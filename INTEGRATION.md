@@ -75,3 +75,35 @@ python rendering/render_scene.py results/<timestamp>/variant_half      # variant
 
 Requires Blender 4.x on `PATH`, the asset DB under `~/reason_assets/`, and an
 OpenAI-compatible LLM endpoint (see `config.py`) — none of which are bundled.
+
+## Option B additions (paper Table 1 alignment)
+
+Factor levels were brought in line with the paper's Table 1 and the render loops
+switched from a full Cartesian product to **one-factor-at-a-time (OFAT)**:
+
+- `RESOLUTIONS` = 196, 224, 256, 336, 384, 448, 512, 768, 1024
+- `BACKGROUND_COLORS` = 6 grays (0, 65, 128, 186, 204, 255) + 3 chromatic
+  (red, green, blue)
+- `FOCAL_LENGTHS` = 16, 24, 35, 50, 85, 100, 200
+- `PITCHS` = 90, 75, 60, 45, 30, 15, 0 (**pitch 90 = top-down** in this
+  renderer's convention; swept as tilt-from-top-down)
+- `YAWS` = 8 azimuths at 45° steps, swept at the oblique pitch `YAW_SWEEP_PITCH`
+  (45)
+- `config.ofat_camera_configs()` yields the OFAT (res/focal/pitch/yaw/hdri)
+  master set; backgrounds are composited only on the baseline-camera master
+  (the rest get the baseline background), matching the OFAT design.
+
+Two extra content-perturbation variants were added to `generate_variants.py`
+(now 9 variants total):
+
+- `variant_scramble` — relocate every object within the scene's XZ footprint
+  (object set, rotation, size preserved; arrangement destroyed).
+- `variant_subst_within` / `variant_subst_cross` — substitute each asset for the
+  most-similar same-category instance / a dissimilar different-category asset
+  (position and rotation fixed).
+
+Camera-convention note: this renderer's top-down pitch (90) is the opposite of
+the bpa-based methods (genxr / HSM / LayoutVLM / IDesign, where 0 = top-down).
+Cross-method viewpoint analysis maps each method onto a common
+"tilt-from-top-down" axis.
+

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Generate ablation variants from an existing Reason-3D scene.
 
-Creates 6 variants:
+Creates content-perturbation variants for the VLM-unreliability audit:
   - 3 reduced-object variants (1/2, 1/4, 1/8 of objects)
+  - 1 layout-scramble variant (relocate every object within the scene
+    footprint; object set and rotation preserved, arrangement destroyed)
   - 3 alternative-asset variants (worst similarity matches at indices 0, 2, 4)
+  - 2 substitution variants (within-category and cross-category swaps)
 
 Usage:
     python generate_variants.py --scene-dir results/2026-03-03_01-56-08/
@@ -81,6 +84,48 @@ def generate_reduced_variants(
         variant_dir = os.path.join(scene_dir, dirname)
         write_variant(variant_dir, variant_objs, variant_data, prompt_text)
         print(f"  {dirname}: {n}/{total} objects")
+
+
+def scramble_positions(placed_objects, seed):
+    """Relocate every object's center to a random point within the scene's XZ
+    footprint, preserving the object set, rotation, and size. Returns a new
+    list of placed-object dicts (deep-copied).
+
+    Pure function (seeded): the object count, names, rotations and sizes are
+    unchanged; only the x and z of ``center`` move, within the bounding box of
+    the original object centers (y/height preserved).
+    """
+    rng = random.Random(seed)
+    objs = copy.deepcopy(placed_objects)
+    if not objs:
+        return objs
+    xs = [o["center"][0] for o in objs]
+    zs = [o["center"][2] for o in objs]
+    xmin, xmax = min(xs), max(xs)
+    zmin, zmax = min(zs), max(zs)
+    # Degenerate (single object / colinear): fall back to a small jitter box.
+    if xmax <= xmin:
+        xmin, xmax = xmin - 0.5, xmax + 0.5
+    if zmax <= zmin:
+        zmin, zmax = zmin - 0.5, zmax + 0.5
+    for o in objs:
+        o["center"] = [
+            rng.uniform(xmin, xmax),
+            o["center"][1],
+            rng.uniform(zmin, zmax),
+        ]
+    return objs
+
+
+def generate_scramble_variant(
+    scene_dir, placed_objects, placed_objects_data, prompt_text, seed
+):
+    variant_objs = scramble_positions(placed_objects, seed)
+    variant_dir = os.path.join(scene_dir, "variant_scramble")
+    write_variant(
+        variant_dir, variant_objs, copy.deepcopy(placed_objects_data), prompt_text
+    )
+    print(f"  variant_scramble: {len(variant_objs)} objects relocated")
 
 
 def compute_similarities(query_embedding, embeddings_data, exclude_guid):
@@ -183,6 +228,76 @@ def generate_alt_variants(
         print(f"  {dirname}: worst-match index {pick_idx} (sim={sim:.4f})")
 
 
+def _apply_swap(variant_objs, variant_data, i, new_obj_data, new_guid):
+    """Swap object i's asset to ``new_guid`` (bounds/size + size_after_rotation)."""
+    new_bounds_center = [
+        new_obj_data["boundsCenter"]["x"],
+        new_obj_data["boundsCenter"]["y"],
+        new_obj_data["boundsCenter"]["z"],
+    ]
+    new_size = [
+        new_obj_data["boundsSize"]["x"],
+        new_obj_data["boundsSize"]["y"],
+        new_obj_data["boundsSize"]["z"],
+    ]
+    variant_data[i]["guid"] = new_guid
+    variant_data[i]["boundsCenter"] = new_bounds_center
+    variant_data[i]["size"] = new_size
+    variant_objs[i]["size"] = new_size
+    variant_objs[i]["size_after_rotation"] = get_rotated_bounding_box(
+        new_size, variant_objs[i]["rotation"]
+    )
+
+
+def generate_substitution_variants(
+    scene_dir, placed_objects, placed_objects_data, prompt_text
+):
+    """Two substitution variants that hold position/rotation fixed and swap the
+    asset only:
+
+      variant_subst_within -- swap each object for the MOST similar different
+        instance (same semantic category, different asset).
+      variant_subst_cross  -- swap each object for a dissimilar asset whose
+        base name differs (a different category).
+
+    Both reuse the embedding ranking from ``compute_similarities`` (ascending =
+    worst first), so within = last entry (highest similarity) and cross = first
+    entry (lowest similarity, which for distinct base names is a different
+    category).
+    """
+    with open(EMBEDDINGS) as f:
+        embeddings_data = json.load(f)
+    with open(OBJ_DATA) as f:
+        obj_data = json.load(f)
+    obj_data_by_guid = {p["guid"]: p for p in obj_data["prefabs"]}
+
+    unique_guids = {}
+    for i, data in enumerate(placed_objects_data):
+        guid = data["guid"]
+        if guid not in unique_guids:
+            unique_guids[guid] = strip_trailing_digits(placed_objects[i]["name"])
+
+    guid_rankings = {}
+    for guid, base_name in unique_guids.items():
+        emb = get_embedding(base_name)
+        guid_rankings[guid] = compute_similarities(emb, embeddings_data, guid)
+
+    for mode in ("within", "cross"):
+        variant_objs = copy.deepcopy(placed_objects)
+        variant_data = copy.deepcopy(placed_objects_data)
+        for i, data in enumerate(variant_data):
+            rankings = guid_rankings[data["guid"]]  # ascending: worst..best
+            if not rankings:
+                continue
+            # within: most similar (end); cross: least similar (start)
+            _, new_guid, _ = rankings[-1] if mode == "within" else rankings[0]
+            _apply_swap(variant_objs, variant_data, i, obj_data_by_guid[new_guid], new_guid)
+        dirname = f"variant_subst_{mode}"
+        variant_dir = os.path.join(scene_dir, dirname)
+        write_variant(variant_dir, variant_objs, variant_data, prompt_text)
+        print(f"  {dirname}: {mode}-category substitution")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate ablation variants from an existing scene"
@@ -208,12 +323,22 @@ def main():
         scene_dir, placed_objects, placed_objects_data, prompt_text, args.seed
     )
 
+    print("\nGenerating layout-scramble variant...")
+    generate_scramble_variant(
+        scene_dir, placed_objects, placed_objects_data, prompt_text, args.seed
+    )
+
     print("\nGenerating alternative-asset variants...")
     generate_alt_variants(
         scene_dir, placed_objects, placed_objects_data, prompt_text
     )
 
-    print("\nDone! Generated 6 variants.")
+    print("\nGenerating substitution variants (within/cross category)...")
+    generate_substitution_variants(
+        scene_dir, placed_objects, placed_objects_data, prompt_text
+    )
+
+    print("\nDone! Generated 9 variants.")
 
 
 if __name__ == "__main__":

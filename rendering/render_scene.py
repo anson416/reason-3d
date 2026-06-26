@@ -59,20 +59,47 @@ def main():
         check=True,
     )
 
-    # Phase 2: Background compositing
+    # Phase 2: Background compositing (OFAT contract).
+    # Backgrounds are the swept factor only on the baseline-camera master
+    # (phase 1b); every other master is composited with the baseline
+    # background only. This avoids the full Cartesian blow-up and matches the
+    # paper's one-factor-at-a-time design.
     if not args.skip_composite:
+        from config import (
+            BASELINE_BG,
+            BASELINE_FOCAL,
+            BASELINE_HDRI,
+            BASELINE_PITCH,
+            BASELINE_RES,
+            BASELINE_YAW,
+            ofat_backgrounds,
+            ofat_camera_configs,
+        )
+
         renderings_dir = os.path.join(scene_dir, "renderings")
-        for res, focal, pitch, yaw, hdri in product(
-            RESOLUTIONS, FOCAL_LENGTHS, PITCHS, YAWS, HDRIS
-        ):
+        # The baseline-camera master gets the full background sweep (phase 1b);
+        # every other master gets the baseline background only.
+        baseline_master = (
+            BASELINE_RES,
+            BASELINE_FOCAL,
+            BASELINE_PITCH,
+            BASELINE_YAW,
+            BASELINE_HDRI,
+        )
+        for c in ofat_camera_configs():
+            key = (c["res"], c["focal"], c["pitch"], c["yaw"], c["hdri"])
             transparent_path = os.path.join(
                 renderings_dir,
-                f"render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png",
+                f"render_{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}.png",
             )
             if not os.path.isfile(transparent_path):
                 continue
-            for r, g, b in BACKGROUND_COLORS:
-                bg_filename = f"render_{res}_{focal}_{r}_{g}_{b}_{pitch}_{yaw}_{hdri}.png"
+            bgs = ofat_backgrounds() if key == baseline_master else [BASELINE_BG]
+            for r, g, b in bgs:
+                bg_filename = (
+                    f"render_{key[0]}_{key[1]}_{r}_{g}_{b}_"
+                    f"{key[2]}_{key[3]}_{key[4]}.png"
+                )
                 bg_path = os.path.join(renderings_dir, bg_filename)
                 add_bg_to_rgba(transparent_path, bg_path, color=(r, g, b))
         print(f"Background compositing complete: {renderings_dir}")
