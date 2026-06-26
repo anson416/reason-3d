@@ -17,7 +17,7 @@ from utilities import (
     get_rotated_bounding_box,
 )
 
-from config import API_KEY, BASE_URL, EMBEDDINGS, RESULTS, ROTATION_DATA
+from config import API_KEY, BASE_URL, EMBEDDINGS, MODEL, RESULTS, ROTATION_DATA
 from utils.llm import JsonResponseModel, Llm
 
 
@@ -40,7 +40,7 @@ Start by extracting the constraints that are already part of the scene descripti
 """
 
     llm = Llm(
-        "gemini-2.5-pro",
+        MODEL,
         max_tokens=32768,
         timeout=600,
         max_retries=5,
@@ -84,7 +84,7 @@ Output (JSON):
 {Schema.to_str()}"""
 
     llm = Llm(
-        "gemini-2.5-pro",
+        MODEL,
         max_tokens=32768,
         timeout=600,
         max_retries=5,
@@ -140,7 +140,7 @@ Output (JSON):
 {Schema.to_str()}"""
 
     llm = Llm(
-        "gemini-2.5-pro",
+        MODEL,
         max_tokens=32768,
         timeout=600,
         max_retries=5,
@@ -204,7 +204,7 @@ Output (JSON):
 {Schema.to_str()}"""
 
     llm = Llm(
-        "gemini-2.5-pro",
+        MODEL,
         max_tokens=32768,
         timeout=600,
         max_retries=5,

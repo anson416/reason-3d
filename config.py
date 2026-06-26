@@ -3,6 +3,9 @@ import os
 # Global variables
 API_KEY = os.environ.get("CA_API_KEY3")
 BASE_URL = "https://api.chatanywhere.tech/v1"
+# Text-reasoning backbone for placement (text-agnostic role), standardised on a
+# single pinned snapshot for the audit.
+MODEL = "gpt-5.1-2025-11-13"
 
 # Paths
 git_root = os.path.dirname(os.path.abspath(__file__))
