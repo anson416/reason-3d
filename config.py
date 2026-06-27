@@ -9,11 +9,17 @@ MODEL = "gpt-5.1-2025-11-13"
 
 # Paths
 git_root = os.path.dirname(os.path.abspath(__file__))
-ASSETS = os.path.expanduser(
-    "~/reason_assets/"
+# Asset/image dirs default to large scratch storage (home quota is tiny);
+# override with VLMUNR_REASON_ASSETS / VLMUNR_REASON_IMAGES if needed.
+_ASSETS_DEFAULT = "/research/d2/fyp24/yflam1/reason_assets/"
+_IMAGES_DEFAULT = "/research/d2/fyp24/yflam1/reason_images/"
+ASSETS = os.environ.get(
+    "VLMUNR_REASON_ASSETS",
+    _ASSETS_DEFAULT if os.path.isdir(_ASSETS_DEFAULT) else os.path.expanduser("~/reason_assets/"),
 )  # PATH to your folder with 3d objects (.fbx, .obj, .glb, .blend)
-IMAGES = os.path.expanduser(
-    "~/reason_images/"
+IMAGES = os.environ.get(
+    "VLMUNR_REASON_IMAGES",
+    _IMAGES_DEFAULT if os.path.isdir(_IMAGES_DEFAULT) else os.path.expanduser("~/reason_images/"),
 )  # PATH where to save all images from the preprocessing
 DESCRIPTIONS = os.path.join(
     git_root, "data/descriptions.json"
