@@ -32,10 +32,12 @@ class JsonResponseModel(ResponseModel):
         def get_fill(ann, depth: int, name: Optional[str] = None) -> str:
             if name is not None and name in substitutions:
                 return substitutions[name]
-            if issubclass(ann, dict):
-                raise RuntimeError("Use JsonResponseModel for dict fields")
+            # Typing generics (e.g. list[str], Optional[X]) are not classes in
+            # Python 3.13, so handle their args BEFORE any issubclass() check.
             args = get_args(ann)
             if len(args) > 0:
+                if isinstance(ann, type) and issubclass(ann, dict):
+                    raise RuntimeError("Use JsonResponseModel for dict fields")
                 fill = "[\n"
                 for i, arg in enumerate(args):
                     fill += " " * (_indent * (depth + 1))
@@ -45,6 +47,10 @@ class JsonResponseModel(ResponseModel):
                     fill += " " * (_indent * (depth + 1)) + "...\n"
                 fill += " " * (_indent * depth) + "]"
                 return fill
+            if not isinstance(ann, type):
+                raise RuntimeError(f"Unsupported data type: {ann}")
+            if issubclass(ann, dict):
+                raise RuntimeError("Use JsonResponseModel for dict fields")
             elif issubclass(ann, JsonResponseModel):
                 return ann.to_str(
                     _depth=depth + 1, _indent=_indent, **substitutions
