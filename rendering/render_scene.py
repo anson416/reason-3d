@@ -42,22 +42,20 @@ def main():
         print(f"Error: {blender_json} not found")
         sys.exit(1)
 
-    # Phase 1: Blender rendering (transparent RGBA)
+    # Phase 1: Blender rendering (transparent RGBA).
+    # Prefer a standalone `blender` binary; otherwise fall back to running the
+    # script with the current Python, which works when bpy is installed as a
+    # module (e.g. `pip install bpy`).
     render_script = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "render_layout.py"
     )
-    subprocess.run(
-        [
-            "blender",
-            "--background",
-            "--python",
-            render_script,
-            "--",
-            "--scene-dir",
-            scene_dir,
-        ],
-        check=True,
-    )
+    import shutil as _shutil
+    if _shutil.which("blender"):
+        cmd = ["blender", "--background", "--python", render_script,
+               "--", "--scene-dir", scene_dir]
+    else:
+        cmd = [sys.executable, render_script, "--scene-dir", scene_dir]
+    subprocess.run(cmd, check=True)
 
     # Phase 2: Background compositing (OFAT contract).
     # Backgrounds are the swept factor only on the baseline-camera master

@@ -19,13 +19,19 @@ from config import (
     YAWS,
 )
 
-# === PARSE ARGS (after Blender's -- separator) ===
-argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+# === PARSE ARGS ===
+# Supports both `blender --background --python this.py -- --scene-dir X` (args
+# after the `--` separator) and direct `python this.py --scene-dir X` (bpy as a
+# module, no separator).
+if "--" in sys.argv:
+    argv = sys.argv[sys.argv.index("--") + 1 :]
+else:
+    argv = sys.argv[1:]
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--scene-dir", required=True, help="Path to timestamped scene dir"
 )
-args = parser.parse_args(argv)
+args, _ = parser.parse_known_args(argv)
 
 scene_dir = args.scene_dir
 
