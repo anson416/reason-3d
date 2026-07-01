@@ -9,6 +9,7 @@ import bpy
 from mathutils import Euler, Vector
 
 sys.path.append(os.path.abspath("."))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     ASSETS,
     FOCAL_LENGTHS,
@@ -19,13 +20,19 @@ from config import (
     YAWS,
 )
 
-# === PARSE ARGS (after Blender's -- separator) ===
-argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+# === PARSE ARGS ===
+# Supports both `blender --background --python this.py -- --scene-dir X` (args
+# after the `--` separator) and direct `python this.py --scene-dir X` (bpy as a
+# module, no separator).
+if "--" in sys.argv:
+    argv = sys.argv[sys.argv.index("--") + 1 :]
+else:
+    argv = sys.argv[1:]
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--scene-dir", required=True, help="Path to timestamped scene dir"
 )
-args = parser.parse_args(argv)
+args, _ = parser.parse_known_args(argv)
 
 scene_dir = args.scene_dir
 
@@ -83,11 +90,18 @@ for info in layout:
     extensions = [".glb", ".fbx", ".obj", ".blend"]
     file_path = None
 
-    # Look for the first existing file with any supported extension
+    # Look for the first existing file with any supported extension.
+    # Support both flat layout (<base>/<uid>.glb) and nested objathor layout
+    # (<base>/<uid>/<uid>.glb).
     for ext in extensions:
-        candidate = os.path.join(asset_base_path, f"{uid}{ext}")
-        if os.path.isfile(candidate):
-            file_path = candidate
+        for candidate in (
+            os.path.join(asset_base_path, f"{uid}{ext}"),
+            os.path.join(asset_base_path, uid, f"{uid}{ext}"),
+        ):
+            if os.path.isfile(candidate):
+                file_path = candidate
+                break
+        if file_path:
             break
 
     if not file_path:
@@ -178,6 +192,33 @@ for info in layout:
         print(f"Error joining objects: {e}. Ignoring the join operation.")
         loaded = None
 
+    # VLMUNR_PATCH fit-to-size
+    # Uniformly rescale the joined object to its intended size (meters).
+    try:
+        import bpy as _b
+        _b.context.view_layer.objects.active = loaded
+        _b.context.view_layer.update()
+        _dims = loaded.dimensions
+        _cur_max = max(_dims.x, _dims.y, _dims.z)
+        _tgt = info.get("size")
+        if _tgt:
+            _tgt_max = max(abs(float(t)) for t in _tgt)
+        else:
+            _tgt_max = min(_cur_max, 3.5)
+        if _cur_max > 1e-6 and _tgt_max > 1e-6:
+            _f = _tgt_max / _cur_max
+            loaded.scale = (loaded.scale.x*_f, loaded.scale.y*_f, loaded.scale.z*_f)
+            _b.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        # Hard clamp: never exceed 3.5 m on any axis.
+        _b.context.view_layer.update()
+        _dims = loaded.dimensions
+        _cur_max = max(_dims.x, _dims.y, _dims.z)
+        if _cur_max > 3.5:
+            _f = 3.5 / _cur_max
+            loaded.scale = (loaded.scale.x*_f, loaded.scale.y*_f, loaded.scale.z*_f)
+            _b.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    except Exception as _e:
+        print("VLMUNR fit-to-size failed:", _e)
     bpy.ops.object.select_all(action="DESELECT")
     loaded.select_set(True)
     bbox_corners_world = [
@@ -223,6 +264,10 @@ floor_center_y = (min_coord.y + max_coord.y) / 2
 
 x_extent = max_coord.x - min_coord.x
 y_extent = max_coord.y - min_coord.y
+# VLMUNR: pad the shell so floor/walls extend beyond the furniture -> room-like
+_VLMUNR_SHELL_MARGIN = 1.0
+x_extent = x_extent + 2*_VLMUNR_SHELL_MARGIN
+y_extent = y_extent + 2*_VLMUNR_SHELL_MARGIN
 
 bpy.ops.mesh.primitive_plane_add(
     size=1, location=(floor_center_x, floor_center_y, 0)
@@ -269,20 +314,53 @@ def create_wall(name, location, rotation, length_scale):
     return wall
 
 
-# UNCOMMENT THIS BLOCK IF YOU WANT WALLS
-# =========================
-# # Back wall (Y+), facing -Y (inward)
-# create_wall("BackWall", (offset_x,offset_y + y / 2, wall_height / 2), (math.radians(90), 0, 0), x)
-#
-# # Front wall (Y-), facing +Y (inward)
-# create_wall("FrontWall", (offset_x, -y / 2 + offset_y, wall_height / 2), (math.radians(90), 0, math.radians(180)), x)
-#
-# # Left wall (X-), facing +X (inward)
-# create_wall("LeftWall", (-x / 2 + offset_x, offset_y, wall_height / 2), (math.radians(90), 0, math.radians(90)), y)
-#
-# # Right wall (X+), facing -X (inward)
-# create_wall("RightWall", (x / 2 + offset_x, offset_y, wall_height / 2), (math.radians(90), 0, math.radians(-90)), y)
-# ========================
+# VLMUNR_PATCH dollhouse walls
+# Build 4 walls around the object-bbox footprint. Each is tagged VLMUNR_WALL so
+# it can be back-face culled per camera (dollhouse view). Margin so walls sit at
+# the room edge, not clipping furniture.
+_wx = x_extent
+_wy = y_extent
+_wcx = floor_center_x
+_wcy = floor_center_y
+_VLMUNR_WALLS = []
+def _mk_wall(name, location, rotation, length_scale, inward_normal):
+    w = create_wall(name, location, rotation, length_scale)
+    w["VLMUNR_WALL"] = 1
+    # store inward normal (unit XY) + wall center for culling decisions
+    w["VLMUNR_NX"], w["VLMUNR_NY"] = inward_normal
+    _VLMUNR_WALLS.append(w)
+    return w
+# Back wall (Y+), plane faces -Y inward
+_mk_wall("BackWall",  (_wcx, _wcy + _wy/2, wall_height/2), (math.radians(90), 0, 0), _wx, (0.0, -1.0))
+# Front wall (Y-), faces +Y inward
+_mk_wall("FrontWall", (_wcx, _wcy - _wy/2, wall_height/2), (math.radians(90), 0, math.radians(180)), _wx, (0.0, 1.0))
+# Left wall (X-), faces +X inward
+_mk_wall("LeftWall",  (_wcx - _wx/2, _wcy, wall_height/2), (math.radians(90), 0, math.radians(90)), _wy, (1.0, 0.0))
+# Right wall (X+), faces -X inward
+_mk_wall("RightWall", (_wcx + _wx/2, _wcy, wall_height/2), (math.radians(90), 0, math.radians(-90)), _wy, (-1.0, 0.0))
+
+def cull_walls(pitch_deg, yaw_deg):
+    """Dollhouse back-face culling: hide walls whose outward normal faces AWAY
+    from the camera (i.e. the near walls between camera and room), so the camera
+    always sees inside. At near-top-down (pitch>=85) walls are edge-on -> show
+    all."""
+    import math as _m
+    # camera horizontal direction (from center toward camera), same spherical
+    # convention as set_camera: yaw rotates the -Y offset around Z.
+    pr = _m.radians(pitch_deg); yr = _m.radians(yaw_deg)
+    lx, ly = 0.0, -_m.cos(pr)
+    cam_dx = lx*_m.cos(yr) - ly*_m.sin(yr)
+    cam_dy = lx*_m.sin(yr) + ly*_m.cos(yr)
+    top_down = pitch_deg >= 85.0
+    for w in _VLMUNR_WALLS:
+        if top_down:
+            w.hide_render = False
+            continue
+        # outward normal = -inward normal
+        ox, oy = -w["VLMUNR_NX"], -w["VLMUNR_NY"]
+        # hide the wall if its OUTWARD face points toward the camera (near wall)
+        facing_cam = (ox*cam_dx + oy*cam_dy) > 0.15
+        w.hide_render = facing_cam
 
 
 # === COMPUTE BOUNDING SPHERE FOR CAMERA POSITIONING ===
@@ -443,13 +521,22 @@ def set_camera(pitch_deg, yaw_deg, focal_length):
     cam_data.clip_end = distance * 3
 
 
-# === RENDER LOOP ===
-for hdri in HDRIS:
+# === RENDER LOOP (OFAT: paper Table 1, not a full Cartesian product) ===
+from config import ofat_camera_configs  # noqa: E402
+
+# Group configs by HDRI so the (expensive) environment-map swap happens once
+# per HDRI rather than per render.
+_configs = ofat_camera_configs()
+_by_hdri: dict[str, list[dict]] = {}
+for _c in _configs:
+    _by_hdri.setdefault(_c["hdri"], []).append(_c)
+
+for hdri, cfgs in _by_hdri.items():
     set_hdri(hdri)
-    for res, focal, pitch, yaw in product(
-        RESOLUTIONS, FOCAL_LENGTHS, PITCHS, YAWS
-    ):
+    for c in cfgs:
+        res, focal, pitch, yaw = c["res"], c["focal"], c["pitch"], c["yaw"]
         set_camera(pitch, yaw, focal)
+        cull_walls(pitch, yaw)  # VLMUNR dollhouse culling
         scene.render.resolution_x = res
         scene.render.resolution_y = res
         filename = f"render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png"
