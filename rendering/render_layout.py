@@ -9,6 +9,7 @@ import bpy
 from mathutils import Euler, Vector
 
 sys.path.append(os.path.abspath("."))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     ASSETS,
     FOCAL_LENGTHS,
@@ -89,11 +90,18 @@ for info in layout:
     extensions = [".glb", ".fbx", ".obj", ".blend"]
     file_path = None
 
-    # Look for the first existing file with any supported extension
+    # Look for the first existing file with any supported extension.
+    # Support both flat layout (<base>/<uid>.glb) and nested objathor layout
+    # (<base>/<uid>/<uid>.glb).
     for ext in extensions:
-        candidate = os.path.join(asset_base_path, f"{uid}{ext}")
-        if os.path.isfile(candidate):
-            file_path = candidate
+        for candidate in (
+            os.path.join(asset_base_path, f"{uid}{ext}"),
+            os.path.join(asset_base_path, uid, f"{uid}{ext}"),
+        ):
+            if os.path.isfile(candidate):
+                file_path = candidate
+                break
+        if file_path:
             break
 
     if not file_path:

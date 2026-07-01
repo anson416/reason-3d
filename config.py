@@ -1,7 +1,7 @@
 import os
 
 # Global variables
-API_KEY = os.environ.get("CA_API_KEY3")
+API_KEY = os.environ.get("CA_API_KEY3") or os.environ.get("CHATANYWHERE_API_KEY")
 BASE_URL = "https://api.chatanywhere.tech/v1"
 # Text-reasoning backbone for placement (text-agnostic role), standardised on a
 # single pinned snapshot for the audit.
@@ -13,9 +13,14 @@ git_root = os.path.dirname(os.path.abspath(__file__))
 # override with VLMUNR_REASON_ASSETS / VLMUNR_REASON_IMAGES if needed.
 _ASSETS_DEFAULT = "/research/d2/fyp24/yflam1/reason_assets/"
 _IMAGES_DEFAULT = "/research/d2/fyp24/yflam1/reason_images/"
+# Prefer the objathor-assets flat structure (uid/uid.glb) when the legacy
+# ~/reason_assets/ symlinks are broken.
+_OBJATHOR_ASSETS = os.path.expanduser("~/.objathor-assets/2023_09_23/assets")
 ASSETS = os.environ.get(
     "VLMUNR_REASON_ASSETS",
-    _ASSETS_DEFAULT if os.path.isdir(_ASSETS_DEFAULT) else os.path.expanduser("~/reason_assets/"),
+    _ASSETS_DEFAULT if os.path.isdir(_ASSETS_DEFAULT)
+    else (_OBJATHOR_ASSETS if os.path.isdir(_OBJATHOR_ASSETS)
+          else os.path.expanduser("~/reason_assets/")),
 )  # PATH to your folder with 3d objects (.fbx, .obj, .glb, .blend)
 IMAGES = os.environ.get(
     "VLMUNR_REASON_IMAGES",
