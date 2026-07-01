@@ -229,24 +229,17 @@ def generate_alt_variants(
 
 
 def _apply_swap(variant_objs, variant_data, i, new_obj_data, new_guid):
-    """Swap object i's asset to ``new_guid`` (bounds/size + size_after_rotation)."""
-    new_bounds_center = [
-        new_obj_data["boundsCenter"]["x"],
-        new_obj_data["boundsCenter"]["y"],
-        new_obj_data["boundsCenter"]["z"],
-    ]
-    new_size = [
-        new_obj_data["boundsSize"]["x"],
-        new_obj_data["boundsSize"]["y"],
-        new_obj_data["boundsSize"]["z"],
-    ]
+    """Swap object i's asset to ``new_guid`` while PRESERVING the original
+    object's bounding box.
+
+    Per the audit methodology, a substituted mesh must be rescaled to the
+    ORIGINAL bounding box so the probe isolates object identity from geometry.
+    We therefore only change the asset ``guid`` (identity) and keep the
+    original ``size`` / ``size_after_rotation`` / ``boundsCenter``; the renderer
+    then scales the new mesh to fit that original size.
+    """
     variant_data[i]["guid"] = new_guid
-    variant_data[i]["boundsCenter"] = new_bounds_center
-    variant_data[i]["size"] = new_size
-    variant_objs[i]["size"] = new_size
-    variant_objs[i]["size_after_rotation"] = get_rotated_bounding_box(
-        new_size, variant_objs[i]["rotation"]
-    )
+    # size, size_after_rotation, boundsCenter, center, rotation all UNCHANGED.
 
 
 def generate_substitution_variants(
@@ -328,10 +321,8 @@ def main():
         scene_dir, placed_objects, placed_objects_data, prompt_text, args.seed
     )
 
-    print("\nGenerating alternative-asset variants...")
-    generate_alt_variants(
-        scene_dir, placed_objects, placed_objects_data, prompt_text
-    )
+    # VLMUNR: alt_* (worst-match) variants dropped per methodology.
+    # generate_alt_variants(scene_dir, placed_objects, placed_objects_data, prompt_text)
 
     print("\nGenerating substitution variants (within/cross category)...")
     generate_substitution_variants(

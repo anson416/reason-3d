@@ -57,6 +57,9 @@ def convert(scene_dir=None):
                     ]
                 ),
                 "uid": name,
+                # VLMUNR: intended object size (meters) so the renderer can
+                # rescale native-unit GLBs to their real-world dimensions.
+                "size": obj.get("size_after_rotation") or obj.get("size"),
             }
         )
     with open(output_path, "w") as outfile:
