@@ -245,7 +245,7 @@ def place_objects_from_list(
     objs = obj_mod
     # name, guid, size, scale_factor, boundsCenter
     order = get_order(constraints, names)
-    objs.sort(key=lambda _obj: order.index(_obj["name"]))
+    objs.sort(key=lambda _obj: order.index(_obj["name"]) if _obj["name"] in order else len(order))
     #########
     # Place objects one by one
     ########
