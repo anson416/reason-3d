@@ -17,11 +17,12 @@ from utilities import (
     get_rotated_bounding_box,
 )
 
-from config import API_KEY, BASE_URL, EMBEDDINGS, MODEL, RESULTS, ROTATION_DATA
-from utils.llm import JsonResponseModel, Llm
+from config import EMBEDDINGS, MODEL, RESULTS, ROTATION_DATA
+from llm_config import GenConfig, build_llm
+from utils.llm import JsonResponseModel
 
 
-def get_constraints(scene_description, object_list):
+def get_constraints(scene_description, object_list, gen=None):
     prompt = f"""\
 You are given a scene description: {scene_description}
 
@@ -39,15 +40,8 @@ Under no circumstances should you contradict constraints from the scene descript
 Start by extracting the constraints that are already part of the scene description and then add the other constraints.
 """
 
-    llm = Llm(
-        MODEL,
-        max_tokens=32768,
-        timeout=600,
-        max_retries=5,
-        api_key=API_KEY,
-        base_url=BASE_URL,
-    )
-    llm_output = llm(prompt)
+    llm, temperature = build_llm(gen, MODEL)
+    llm_output = llm(prompt, temperature=temperature)
     assert llm_output.response is not None
     return llm_output.response
 
@@ -67,7 +61,7 @@ def rescale_prefabs(objs):
     return objs  # guid, name, size, boundsSize, boundsCenter, scale_factor
 
 
-def get_order(constraints, objects):
+def get_order(constraints, objects, gen=None):
     class Schema(JsonResponseModel):
         constraints: list[str]
 
@@ -83,20 +77,13 @@ IMPORTANT: Under no circumstances should you add or remove any objects from the 
 Output (JSON):
 {Schema.to_str()}"""
 
-    llm = Llm(
-        MODEL,
-        max_tokens=32768,
-        timeout=600,
-        max_retries=5,
-        api_key=API_KEY,
-        base_url=BASE_URL,
-    )
-    llm_output = llm(prompt, Schema)
+    llm, temperature = build_llm(gen, MODEL)
+    llm_output = llm(prompt, Schema, temperature=temperature)
     return llm_output.response.constraints
 
 
 def place_objects(
-    scene_description, object_name, object_size, placed_objects, constraints
+    scene_description, object_name, object_size, placed_objects, constraints, gen=None
 ):
     class Schema(JsonResponseModel):
         center: list[float]
@@ -139,15 +126,8 @@ The size_after_rotation field is the original size of the bounding box with the 
 Output (JSON):
 {Schema.to_str()}"""
 
-    llm = Llm(
-        MODEL,
-        max_tokens=32768,
-        timeout=600,
-        max_retries=5,
-        api_key=API_KEY,
-        base_url=BASE_URL,
-    )
-    llm_output = llm(prompt, Schema, sys_prompt=system_instructions)
+    llm, temperature = build_llm(gen, MODEL)
+    llm_output = llm(prompt, Schema, sys_prompt=system_instructions, temperature=temperature)
     obj = llm_output.response.model_dump()
     obj["name"] = object_name
     obj["size"] = object_size
@@ -163,6 +143,7 @@ def update_object(
     placed_objects,
     constraints,
     intersection_object,
+    gen=None,
 ):
     class Schema(JsonResponseModel):
         center: list[float]
@@ -203,20 +184,13 @@ The size_after_rotation field is the original size of the bounding box with the 
 Output (JSON):
 {Schema.to_str()}"""
 
-    llm = Llm(
-        MODEL,
-        max_tokens=32768,
-        timeout=600,
-        max_retries=5,
-        api_key=API_KEY,
-        base_url=BASE_URL,
-    )
-    llm_output = llm(prompt, Schema, sys_prompt=system_instructions)
+    llm, temperature = build_llm(gen, MODEL)
+    llm_output = llm(prompt, Schema, sys_prompt=system_instructions, temperature=temperature)
     return llm_output.response.model_dump()
 
 
 def place_objects_from_list(
-    scene_description, obj_list, skip_refinement=False, scene_dir=None
+    scene_description, obj_list, skip_refinement=False, scene_dir=None, gen=None
 ):
     with open(ROTATION_DATA, "r") as file:
         rotation_data = json.load(file)
@@ -224,7 +198,7 @@ def place_objects_from_list(
 
     names = [obj["name"] for obj in sizes]
 
-    constraints = get_constraints(scene_description, names)
+    constraints = get_constraints(scene_description, names, gen)
     objs = rescale_prefabs(sizes)
     obj_mod = []
     for obj in objs:
@@ -244,7 +218,7 @@ def place_objects_from_list(
         obj_mod.append(new_obj)
     objs = obj_mod
     # name, guid, size, scale_factor, boundsCenter
-    order = get_order(constraints, names)
+    order = get_order(constraints, names, gen)
     objs.sort(key=lambda _obj: order.index(_obj["name"]) if _obj["name"] in order else len(order))
     #########
     # Place objects one by one
@@ -259,6 +233,7 @@ def place_objects_from_list(
                 obj["size"],
                 placed_objects,
                 constraints,
+                gen,
             )
         )
     # name, size, center, rotation, size_after_rotation
@@ -302,6 +277,7 @@ def place_objects_from_list(
             placed_objects,
             constraints,
             intersections,
+            gen,
         )
 
         obj["center"] = new_values["center"]

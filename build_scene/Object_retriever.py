@@ -6,12 +6,16 @@ from sklearn.metrics.pairwise import cosine_similarity
 from utilities import Attributes, get_attr_from_guid
 
 sys.path.append(abspath(join(dirname(__file__), "..")))
-from config import API_KEY, BASE_URL
+from llm_config import GenConfig, build_llm
 from preprocessing.CreateEmbeddings import get_embedding
-from utils.llm import JsonResponseModel, Llm
+from utils.llm import JsonResponseModel
 
 
-def get_scene_objects(scene_description, num_obj):
+# Legacy chat model for object-extraction / best-choice roles.
+_EXTRACT_MODEL = "gemini-2.5-pro"
+
+
+def get_scene_objects(scene_description, num_obj, gen=None):
     class Item(JsonResponseModel):
         name: str
         Physical_properties: str
@@ -41,15 +45,8 @@ Step 3: Tell me how many duplicates of the object are required.
 Output (JSON):
 {Schema.to_str()}"""
 
-    llm = Llm(
-        "gemini-2.5-pro",
-        max_tokens=32768,
-        timeout=600,
-        max_retries=5,
-        api_key=API_KEY,
-        base_url=BASE_URL,
-    )
-    llm_output = llm(prompt, Schema)
+    llm, temperature = build_llm(gen, _EXTRACT_MODEL)
+    llm_output = llm(prompt, Schema, temperature=temperature)
     objects = [
         {k.replace("_", " "): v for k, v in item.model_dump().items()}
         for item in llm_output.response.objects
@@ -57,7 +54,7 @@ Output (JSON):
     return {"objects": objects}
 
 
-def find_assets_for_scene(scene_description, embeddings_data, top_n):
+def find_assets_for_scene(scene_description, embeddings_data, top_n, gen=None):
     """
     Generate 10 descriptions of assets required for the scene and return best matches.
 
@@ -70,12 +67,11 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
         List of top matching prefabs
     """
     # Get objects needed for scene
-    scene_objects = get_scene_objects(scene_description, top_n)
+    scene_objects = get_scene_objects(scene_description, top_n, gen)
 
     # Calculate similarity with each prefab
 
     chosen_assets = []
-    top5 = []
     for asset in scene_objects.get("objects", scene_objects):
         similarities = []
         name = asset.get("name")
@@ -122,12 +118,13 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
         # Sort by similarity (highest first)
         similarities.sort(key=lambda x: x["similarity"], reverse=True)
 
-        top5.append(similarities[:5])
+        # Top candidates (fewer than 5 if the asset database is small).
+        candidates = similarities[:5]
         #############
-        # Let LLM decide from top5
+        # Let LLM decide from the candidates
         #############
-        get_attr_from_guid(Attributes.FULL_DESCRIPTION, top5[-1], [])
-        get_attr_from_guid(Attributes.NAME, top5[-1], [])
+        get_attr_from_guid(Attributes.FULL_DESCRIPTION, candidates, [])
+        get_attr_from_guid(Attributes.NAME, candidates, [])
         index = pick_best_choice(
             f"{name}: {phys_desc} {func_desc} {cont_desc}",
             [
@@ -136,11 +133,12 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
                     for k, v in a.items()
                     if k == "Full description" or k == "name"
                 }
-                for a in top5[-1]
+                for a in candidates
             ],
+            gen,
         )
-        if 0 < index < 6:
-            chosen_assets.append(top5[-1][index - 1])
+        if 0 < index <= len(candidates):
+            chosen_assets.append(candidates[index - 1])
         else:
             chosen_assets.append(
                 {
@@ -154,7 +152,7 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n):
     return chosen_assets
 
 
-def pick_best_choice(target_object, top5):
+def pick_best_choice(target_object, top5, gen=None):
     class Schema(JsonResponseModel):
         index: int
 
@@ -170,13 +168,6 @@ If you think that no object in the list can be can be used as a substitution for
 Output (JSON):
 {Schema.to_str()}"""
 
-    llm = Llm(
-        "gemini-2.5-pro",
-        max_tokens=32768,
-        timeout=600,
-        max_retries=5,
-        api_key=API_KEY,
-        base_url=BASE_URL,
-    )
-    llm_output = llm(prompt, Schema)
+    llm, temperature = build_llm(gen, _EXTRACT_MODEL)
+    llm_output = llm(prompt, Schema, temperature=temperature)
     return llm_output.response.index
