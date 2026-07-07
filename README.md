@@ -84,21 +84,23 @@ The final scene will be rendered in Blender, complete with a wooden floor. The r
 
 ---
 
-## Text-to-Scene CLI (`scene_cli.py`)
+## Text-to-Scene CLI (`cli.py`)
 
 A single entry point that generates a scene from a textual prompt and, optionally,
 four content-perturbation variants — all into one timestamped run folder. Only
 the base scene is billed (LLM + embeddings); the variants are pure local edits of
-the base scene, so they cost nothing.
+the base scene, so they cost nothing. Run `python cli.py --help` for the full
+flag list; the module docstring (`python -c "import cli; help(cli)"`) documents
+every external resource the method needs and how to prepare it.
 
 ```bash
-python scene_cli.py --prompt "a cozy living room with a sofa and coffee table"
+python cli.py --prompt "a cozy living room with a sofa and coffee table"
 ```
 
 With variants and rendering:
 
 ```bash
-python scene_cli.py --prompt "..." --variants --render \
+python cli.py --prompt "..." --variants --render \
     --model gpt-5.1-2025-11-13 --temperature 0.7 \
     --base-url https://api.openai.com/v1 --api-key sk-...
 ```
@@ -112,11 +114,25 @@ python scene_cli.py --prompt "..." --variants --render \
 | `--temperature` | Sampling temperature for the chat-LLM roles (0–2). |
 | `--base-url` | LLM API base URL. |
 | `--api-key` | LLM API key (defaults to the env/config key; never printed). |
+| `--assets` | 3D asset folder (flat `<uid>.glb` or nested `<uid>/<uid>.glb`). Default: `config.ASSETS`. |
+| `--images` | Folder for preprocessing thumbnails. Default: `config.IMAGES`. |
+| `--data-dir` | Dir with `embeddings.json`/`descriptions.json`/`object_data.json`/`rotation_data.json` (from `preprocess.py`). Default: repo `data/`. |
 | `--num-objects` | Override the number of different objects to use. |
 | `--no-refinement` | Skip the placement refinement step. |
 | `--variants` | Also generate `variant_01..04` from the base scene (free). |
 | `--render` | Render PNGs (Blender) for the base (and variants). Off by default — JSON-only is fast and free. |
 | `--seed` | Random seed for the seeded variants (`variant_01_half`, `variant_03_scrambled`). |
+| `--output-root` | Root dir for timestamped run folders (default `outputs`). |
+
+**External resources.** Reason-3D is not self-contained: it needs (1) a 3D
+asset folder (`--assets`), (2) preprocessed data tables (`--data-dir`, made by
+`python preprocess.py`), (3) rendering materials shipped in the repo + Blender
+(only for `--render`), and (4) an LLM/embedding API (`--api-key`/`--base-url`/
+`--model`). The `cli.py` module docstring has the full checklist, including how
+to download the ObjAtHor asset set (`pip install objathor` then
+`python -m objathor.dataset.download_holodeck_base_data --path ~/.objathor-assets`)
+and how to prepare `data/`. The CLI fails fast with a clear message if any
+required resource is missing.
 
 **Output layout** (`outputs/<UTC-datetime>/`, e.g. `outputs/20260708-023434/`):
 
@@ -144,6 +160,7 @@ outputs/20260708-023434/
 
 > **Prerequisite:** generation requires the preprocessed `data/` files
 > (`embeddings.json`, `descriptions.json`, `object_data.json`,
-> `rotation_data.json`) and 3D assets (see Step 1). Run `python preprocess.py`
-> once first. JSON-only runs (`--render` omitted) still need the `data/` files
+> `rotation_data.json`) and 3D assets (`--assets`). Run `python preprocess.py`
+> once first (see the `cli.py` docstring for the ObjAtHor asset download).
+> JSON-only runs (`--render` omitted) still need the `data/` files and assets
 > but not Blender.
