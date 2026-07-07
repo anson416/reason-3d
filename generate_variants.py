@@ -291,6 +291,215 @@ def generate_substitution_variants(
         print(f"  {dirname}: {mode}-category substitution")
 
 
+# ---------------------------------------------------------------------------
+# Named content-perturbation variants (variant_01 .. variant_04).
+#
+# These are pure local edits of an already-generated base scene: NO LLM calls,
+# NO embedding API calls, NO regeneration. They fork the in-progress scene's
+# placed_objects + placed_objects_data and rewrite them. Each writes to its own
+# subfolder containing placed_objects.json, placed_objects_data.json,
+# prompt.txt and raw_blender.json.
+# ---------------------------------------------------------------------------
+
+NAMED_VARIANT_DIRS = [
+    "variant_01_half",
+    "variant_02_biggest-only",
+    "variant_03_scrambled",
+    "variant_04_worst-object",
+]
+
+
+def _object_volume(obj):
+    """Bounding-box volume (w*h*d) of a placed object, used to rank by size."""
+    size = obj.get("size_after_rotation") or obj.get("size")
+    if not size or len(size) < 3:
+        return 0.0
+    return float(size[0]) * float(size[1]) * float(size[2])
+
+
+def generate_half_variant(
+    scene_dir, placed_objects, placed_objects_data, prompt_text, seed
+):
+    """Keep a random ~50% subset of the objects (positions/rotations intact)."""
+    rng = random.Random(seed)
+    total = len(placed_objects)
+    n = max(1, round(total * 0.5)) if total else 0
+    indices = sorted(rng.sample(range(total), n)) if total else []
+    variant_objs = [placed_objects[i] for i in indices]
+    variant_data = [placed_objects_data[i] for i in indices]
+    variant_dir = os.path.join(scene_dir, "variant_01_half")
+    write_variant(variant_dir, variant_objs, variant_data, prompt_text)
+    print(f"  variant_01_half: kept {n}/{total} objects")
+
+
+def generate_biggest_only_variant(
+    scene_dir, placed_objects, placed_objects_data, prompt_text
+):
+    """Keep only the single largest object (by bounding-box volume)."""
+    if not placed_objects:
+        # Nothing to keep; write an empty scene for downstream symmetry.
+        variant_dir = os.path.join(scene_dir, "variant_02_biggest-only")
+        write_variant(variant_dir, [], [], prompt_text)
+        print("  variant_02_biggest-only: empty scene (no objects)")
+        return
+    best_i = max(range(len(placed_objects)), key=lambda i: _object_volume(placed_objects[i]))
+    variant_objs = [placed_objects[best_i]]
+    variant_data = [placed_objects_data[best_i]]
+    variant_dir = os.path.join(scene_dir, "variant_02_biggest-only")
+    write_variant(variant_dir, variant_objs, variant_data, prompt_text)
+    print(
+        f"  variant_02_biggest-only: kept '{variant_objs[0]['name']}' "
+        f"(volume={_object_volume(variant_objs[0]):.3f})"
+    )
+
+
+def _scene_footprint(placed_objects):
+    """(xmin,xmax,zmin,zmax) over object centers; degenerate-safe."""
+    if not placed_objects:
+        return 0.0, 0.0, 0.0, 0.0
+    xs = [o["center"][0] for o in placed_objects]
+    zs = [o["center"][2] for o in placed_objects]
+    xmin, xmax = min(xs), max(xs)
+    zmin, zmax = min(zs), max(zs)
+    if xmax <= xmin:
+        xmin, xmax = xmin - 0.5, xmax + 0.5
+    if zmax <= zmin:
+        zmin, zmax = zmin - 0.5, zmax + 0.5
+    return xmin, xmax, zmin, zmax
+
+
+def generate_scrambled_variant(
+    scene_dir, placed_objects, placed_objects_data, prompt_text, seed
+):
+    """Re-position AND re-rotate every object anywhere inside the whole-scene
+    XZ footprint (object set, size and height preserved). Destroys the
+    arrangement while keeping every object in the scene."""
+    rng = random.Random(seed + 1)
+    objs = copy.deepcopy(placed_objects)
+    if objs:
+        xmin, xmax, zmin, zmax = _scene_footprint(objs)
+        for o in objs:
+            o["center"] = [
+                rng.uniform(xmin, xmax),
+                o["center"][1],
+                rng.uniform(zmin, zmax),
+            ]
+            # Re-rotate: random Y-axis heading; keep the floor-plane convention
+            # (no X/Z tilt that would sink objects into the floor).
+            o["rotation"] = [
+                0.0,
+                float(rng.choice([0, 90, 180, 270])),
+                0.0,
+            ]
+            o["size_after_rotation"] = get_rotated_bounding_box(
+                o.get("size", o.get("size_after_rotation")), o["rotation"]
+            )
+    variant_dir = os.path.join(scene_dir, "variant_03_scrambled")
+    write_variant(variant_dir, objs, copy.deepcopy(placed_objects_data), prompt_text)
+    print(f"  variant_03_scrambled: {len(objs)} objects re-positioned/rotated")
+
+
+def _worst_match_for_guid(query_guid, embeddings_data):
+    """Globally LEAST-similar prefab to the asset identified by ``query_guid``,
+    using only the stored embeddings (zero API calls).
+
+    The selected asset's own physical/functional/contextual embeddings live in
+    embeddings.json, so we rank every OTHER prefab by mean cosine similarity to
+    that chosen asset and return the minimum. This is exactly 'hack the sort to
+    descending and pick the first', applied post-hoc to the base scene.
+    """
+    q = embeddings_data.get(
+        next(
+            (name for name, d in embeddings_data.items() if d["guid"] == query_guid),
+            None,
+        )
+    )
+    if q is None:
+        return None
+    q_phys = np.array(q["embedding_phys"])
+    q_func = np.array(q["embedding_func"])
+    q_cont = np.array(q["embedding_cont"])
+    worst = None  # (sim, guid)
+    for prefab_name, data in embeddings_data.items():
+        if data["guid"] == query_guid:
+            continue
+        sim = (
+            cosine_similarity([q_phys], [np.array(data["embedding_phys"])])[0][0]
+            + cosine_similarity([q_func], [np.array(data["embedding_func"])])[0][0]
+            + cosine_similarity([q_cont], [np.array(data["embedding_cont"])])[0][0]
+        ) / 3
+        if worst is None or sim < worst[0]:
+            worst = (sim, data["guid"])
+    return worst
+
+
+def generate_worst_object_variant(
+    scene_dir, placed_objects, placed_objects_data, prompt_text
+):
+    """Swap every object's asset for the globally least-similar prefab.
+
+    Position/rotation are preserved (consistent with the substitution-variant
+    methodology); only the asset identity (guid) and its size/boundsCenter
+    change so the renderer loads the worst-matching mesh. NO LLM and NO
+    embedding API calls — rankings come from stored embeddings.
+    """
+    with open(EMBEDDINGS) as f:
+        embeddings_data = json.load(f)
+    with open(OBJ_DATA) as f:
+        obj_data = json.load(f)
+    obj_data_by_guid = {p["guid"]: p for p in obj_data["prefabs"]}
+
+    variant_objs = copy.deepcopy(placed_objects)
+    variant_data = copy.deepcopy(placed_objects_data)
+    for i, data in enumerate(variant_data):
+        worst = _worst_match_for_guid(data["guid"], embeddings_data)
+        if worst is None:
+            continue
+        _, new_guid = worst
+        new_obj_data = obj_data_by_guid.get(new_guid)
+        if new_obj_data is None:
+            continue
+        new_bounds_center = [
+            new_obj_data["boundsCenter"]["x"],
+            new_obj_data["boundsCenter"]["y"],
+            new_obj_data["boundsCenter"]["z"],
+        ]
+        new_size = [
+            new_obj_data["boundsSize"]["x"],
+            new_obj_data["boundsSize"]["y"],
+            new_obj_data["boundsSize"]["z"],
+        ]
+        variant_data[i]["guid"] = new_guid
+        variant_data[i]["boundsCenter"] = new_bounds_center
+        variant_data[i]["size"] = new_size
+        variant_objs[i]["size"] = new_size
+        variant_objs[i]["size_after_rotation"] = get_rotated_bounding_box(
+            new_size, variant_objs[i]["rotation"]
+        )
+    variant_dir = os.path.join(scene_dir, "variant_04_worst-object")
+    write_variant(variant_dir, variant_objs, variant_data, prompt_text)
+    print(f"  variant_04_worst-object: {len(variant_objs)} objects swapped")
+
+
+def generate_named_variants(
+    scene_dir, placed_objects, placed_objects_data, prompt_text, seed
+):
+    """Produce the four named variants (01_half, 02_biggest-only, 03_scrambled,
+    04_worst-object) as sibling subfolders of ``scene_dir``."""
+    generate_half_variant(
+        scene_dir, placed_objects, placed_objects_data, prompt_text, seed
+    )
+    generate_biggest_only_variant(
+        scene_dir, placed_objects, placed_objects_data, prompt_text
+    )
+    generate_scrambled_variant(
+        scene_dir, placed_objects, placed_objects_data, prompt_text, seed
+    )
+    generate_worst_object_variant(
+        scene_dir, placed_objects, placed_objects_data, prompt_text
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate ablation variants from an existing scene"
