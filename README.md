@@ -81,3 +81,69 @@ _Optional Flags:_
 ### Step 3: Rendering
 
 The final scene will be rendered in Blender, complete with a wooden floor. The rendered images will be saved in the **`results/final_renders`** directory.
+
+---
+
+## Text-to-Scene CLI (`scene_cli.py`)
+
+A single entry point that generates a scene from a textual prompt and, optionally,
+four content-perturbation variants — all into one timestamped run folder. Only
+the base scene is billed (LLM + embeddings); the variants are pure local edits of
+the base scene, so they cost nothing.
+
+```bash
+python scene_cli.py --prompt "a cozy living room with a sofa and coffee table"
+```
+
+With variants and rendering:
+
+```bash
+python scene_cli.py --prompt "..." --variants --render \
+    --model gpt-5.1-2025-11-13 --temperature 0.7 \
+    --base-url https://api.openai.com/v1 --api-key sk-...
+```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--prompt` | (required) Textual scene description. |
+| `--model` | Chat-LLM model for **all** reasoning roles (extraction, selection, constraints, order, placement, refinement). |
+| `--temperature` | Sampling temperature for the chat-LLM roles (0–2). |
+| `--base-url` | LLM API base URL. |
+| `--api-key` | LLM API key (defaults to the env/config key; never printed). |
+| `--num-objects` | Override the number of different objects to use. |
+| `--no-refinement` | Skip the placement refinement step. |
+| `--variants` | Also generate `variant_01..04` from the base scene (free). |
+| `--render` | Render PNGs (Blender) for the base (and variants). Off by default — JSON-only is fast and free. |
+| `--seed` | Random seed for the seeded variants (`variant_01_half`, `variant_03_scrambled`). |
+
+**Output layout** (`outputs/<UTC-datetime>/`, e.g. `outputs/20260708-023434/`):
+
+```
+outputs/20260708-023434/
+├── config.json                  # prompt + all CLI configs + timestamp + git commit
+├── base/                        # the generated scene
+│   ├── placed_objects.json
+│   ├── placed_objects_data.json
+│   ├── prompt.txt
+│   ├── raw_blender.json
+│   └── renderings/              # only with --render
+├── variant_01_half/             # ~50% of objects (seeded subset)
+├── variant_02_biggest-only/     # only the largest object (by bbox volume)
+├── variant_03_scrambled/        # re-positioned + re-rotated within the scene footprint
+└── variant_04_worst-object/     # each asset swapped to the globally least-similar prefab
+```
+
+> **Variants do not regenerate.** `variant_01..04` fork the base scene's
+> `placed_objects` / `placed_objects_data` and rewrite them locally — no LLM
+> calls and no embedding API calls. `variant_04_worst-object` "hacks" the
+> asset-selection sort (which normally picks the *most*-similar prefab) to pick
+> the *least*-similar one, using the stored embeddings of the originally-chosen
+> asset, so it needs no API at all.
+
+> **Prerequisite:** generation requires the preprocessed `data/` files
+> (`embeddings.json`, `descriptions.json`, `object_data.json`,
+> `rotation_data.json`) and 3D assets (see Step 1). Run `python preprocess.py`
+> once first. JSON-only runs (`--render` omitted) still need the `data/` files
+> but not Blender.
