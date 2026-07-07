@@ -12,7 +12,12 @@ from utils.llm import TextEmbedder
 
 def get_embedding(text):
     """
-    Get embedding for text using Gemini API
+    Get embedding for text using the configured embedding model.
+
+    Reuses a single module-level ``TextEmbedder`` client instead of building a
+    new one per call (the previous version spawned a fresh HTTP client for
+    every embedding — 3x per object during generation, which is wasteful and
+    slow under rate limits).
 
     Args:
         text: The text to embed
@@ -20,11 +25,15 @@ def get_embedding(text):
     Returns:
         Embedding array
     """
-    # Using Gemini's embedding model
-    te = TextEmbedder(
-        model="text-embedding-3-small", api_key=API_KEY, base_url=BASE_URL
-    )
-    return te(text, np.ndarray)
+    global _embedder
+    if _embedder is None:
+        _embedder = TextEmbedder(
+            model="text-embedding-3-small", api_key=API_KEY, base_url=BASE_URL
+        )
+    return _embedder(text, np.ndarray)
+
+
+_embedder = None
 
 
 def embed_descriptions(descriptions_file, embedding_file_path):

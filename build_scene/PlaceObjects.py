@@ -294,45 +294,22 @@ def place_objects_from_list(
     return
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Build scene.")
-    parser.add_argument("--prompt", help="The input prompt.", required=True)
-    parser.add_argument(
-        "--no-refinement",
-        help="Skip the refinement step.",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--num-objects",
-        help="Override the number of different objects to use.",
-        default="",
-    )
-    parser.add_argument(
-        "--skip-render",
-        help="Skip the rendering step (generate scene data only).",
-        action="store_true",
-    )
-    args = parser.parse_args()
-    skip_refinement = args.no_refinement
+def retrieve_input_objects(prompt, num_objects, gen=None):
+    """Run object extraction + asset retrieval for a prompt.
 
-    # Create timestamped output directory
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    scene_dir = join(RESULTS, timestamp)
-    os.makedirs(scene_dir, exist_ok=True)
-    with open(join(scene_dir, "prompt.txt"), "w") as file:
-        file.write(args.prompt)
-
+    Returns the deduplicated, quantity-expanded ``input_objects`` list
+    (each entry: ``{guid, name}``, with duplicate instances suffixed
+    ``Name2``, ``Name3`` ...). Objects the LLM could not match (guid 0) are
+    dropped here so they never reach placement.
+    """
     with open(EMBEDDINGS, "r") as file:
         embeddings_data = json.load(file)
 
-    prompt = args.prompt
-    retrieved_objs = find_assets_for_scene(
-        prompt, embeddings_data, args.num_objects
-    )
+    retrieved_objs = find_assets_for_scene(prompt, embeddings_data, num_objects, gen)
     retrieved_objs = get_attr_from_guid(Attributes.NAME, retrieved_objs, [])
     scene_guids = sum(
         [
-            [data["guid"] for a in range(data["quantity"])]
+            [data["guid"] for _ in range(data["quantity"])]
             for data in retrieved_objs
             if data["guid"] != 0
         ],
@@ -352,17 +329,71 @@ def main():
                     "name": o["name"] + str(i + 1) if i > 0 else o["name"],
                 }
             )
+    return input_objects
+
+
+def generate_scene(
+    prompt, scene_dir, gen=None, num_objects="", skip_refinement=False
+):
+    """Generate a base scene into ``scene_dir``.
+
+    Runs the full text-to-scene pipeline up to (but not including) rendering:
+    object extraction, asset retrieval, placement, refinement, and Blender
+    JSON conversion. Writes ``placed_objects.json``, ``placed_objects_data.json``
+    and ``raw_blender.json`` into ``scene_dir``. Returns the ``input_objects``
+    list used for placement.
+    """
+    os.makedirs(scene_dir, exist_ok=True)
+    with open(join(scene_dir, "prompt.txt"), "w") as file:
+        file.write(prompt)
+
+    input_objects = retrieve_input_objects(prompt, num_objects, gen)
+    if not input_objects:
+        raise RuntimeError(
+            "No matching assets were found for any object in the prompt; "
+            "cannot build a scene. Check that the asset database "
+            "(embeddings/descriptions) is populated and matches the prompt."
+        )
 
     place_objects_from_list(
-        prompt, input_objects, skip_refinement, scene_dir=scene_dir
+        prompt, input_objects, skip_refinement, scene_dir=scene_dir, gen=gen
     )
 
-    # Convert for Blender
-    script_path = abspath(
-        join(dirname(__file__), "../rendering/convert_for_blender.py")
+    # Convert for Blender (in-process; writes raw_blender.json into scene_dir).
+    from rendering.convert_for_blender import convert
+
+    convert(scene_dir)
+    return input_objects
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Build scene.")
+    parser.add_argument("--prompt", help="The input prompt.", required=True)
+    parser.add_argument(
+        "--no-refinement",
+        help="Skip the refinement step.",
+        action="store_true",
     )
-    subprocess.run(
-        ["python", script_path, "--scene-dir", scene_dir], check=True
+    parser.add_argument(
+        "--num-objects",
+        help="Override the number of different objects to use.",
+        default="",
+    )
+    parser.add_argument(
+        "--skip-render",
+        help="Skip the rendering step (generate scene data only).",
+        action="store_true",
+    )
+    args = parser.parse_args()
+
+    # Create timestamped output directory
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    scene_dir = join(RESULTS, timestamp)
+    generate_scene(
+        args.prompt,
+        scene_dir,
+        num_objects=args.num_objects,
+        skip_refinement=args.no_refinement,
     )
 
     if not args.skip_render:

@@ -4,11 +4,26 @@ import os
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from config import BLENDER_FILE, DESCRIPTIONS, ROTATION_DATA
+from config import BLENDER_FILE, DESCRIPTIONS, OBJ_DATA, ROTATION_DATA
 
 
 def swap(vec):
     return [vec[0], vec[2], vec[1]]
+
+
+def _build_name_index():
+    """guid -> asset name, falling back to OBJ_DATA prefabName when a guid is
+    absent from DESCRIPTIONS (e.g. a substituted/alt asset whose description
+    was never generated). Without this fallback the list-comprehension below
+    raises an unhelpful IndexError on the first missing guid."""
+    name_by_guid = {}
+    try:
+        with open(OBJ_DATA, "r") as f:
+            for prefab in json.load(f).get("prefabs", []):
+                name_by_guid[prefab["guid"]] = prefab["prefabName"]
+    except (FileNotFoundError, KeyError):
+        pass
+    return name_by_guid
 
 
 def convert(scene_dir=None):
@@ -36,8 +51,21 @@ def convert(scene_dir=None):
         rotation_data = json.load(file)
 
     output = []
+    fallback_name_by_guid = _build_name_index()
     for data, obj in zip(object_data, objects):
-        name = [k for k, v in id_data.items() if v["guid"] == data["guid"]][0]
+        guid = data["guid"]
+        name = next(
+            (k for k, v in id_data.items() if v["guid"] == guid), None
+        )
+        if name is None:
+            # guid not described in DESCRIPTIONS; fall back to the asset's
+            # prefabName (filename stem) from OBJ_DATA so rendering still works.
+            name = fallback_name_by_guid.get(guid)
+        if name is None:
+            raise RuntimeError(
+                f"guid {guid!r} not found in DESCRIPTIONS or OBJ_DATA; cannot "
+                f"resolve asset file for object {obj.get('name')!r}."
+            )
         output.append(
             {
                 "position": swap(obj["center"]),
