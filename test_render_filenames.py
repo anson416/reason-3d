@@ -75,6 +75,60 @@ def test_backgrounds_have_ten_colors_including_118():
     assert len(bgs) == 10, len(bgs)
 
 
+def test_master_parser_accepts_master_rejects_composite():
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "rendering"))
+    import render_scene as r  # noqa: E402
+    assert r._parse_master(
+        "render_res-512_focal-50_pitch-0_yaw-0_env-city.png"
+    ) == (512, 50, 0, 0, "city")
+    assert r._parse_master(
+        "render_res-512_focal-50_pitch-0_yaw-0_env-city_bg-255-255-255.png"
+    ) is None  # composite must not parse as a master
+
+
+def test_composite_phase_writes_expected_filenames():
+    """End-to-end-ish: fake transparent masters + run phase 2, check the
+    composite filenames and the baseline-gets-full-sweep rule."""
+    import os
+    import sys
+    import tempfile
+
+    from PIL import Image  # noqa: E402
+    sys.path.insert(0, os.path.join(HERE, "rendering"))
+    import render_scene as r  # noqa: E402
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # one baseline master + one non-baseline master
+        base_name = c.render_master_filename(512, 50, 0, 0, "city")
+        other_name = c.render_master_filename(196, 50, 0, 0, "city")
+        for name in (base_name, other_name):
+            Image.new("RGBA", (8, 8), (10, 20, 30, 40)).save(
+                os.path.join(tmp, name)
+            )
+        # ofat mode: baseline master gets all 10 bgs; other master gets white only
+        r._composite_phase(tmp, "ofat", skip_composite=False)
+        files = set(os.listdir(tmp))
+        # baseline master: 10 composites (white one included in the 10)
+        for bg in c.ofat_backgrounds():
+            assert c.render_composite_filename(512, 50, 0, 0, "city", bg) in files
+        # other master: only white composite
+        white = c.render_composite_filename(196, 50, 0, 0, "city", (255, 255, 255))
+        assert white in files
+        assert c.render_composite_filename(196, 50, 0, 0, "city", (0, 0, 0)) not in files
+
+    # baseline mode: every master gets white only
+    with tempfile.TemporaryDirectory() as tmp:
+        base_name = c.render_master_filename(512, 50, 0, 0, "city")
+        Image.new("RGBA", (8, 8), (1, 2, 3, 4)).save(os.path.join(tmp, base_name))
+        r._composite_phase(tmp, "baseline", skip_composite=False)
+        files = set(os.listdir(tmp))
+        assert c.render_composite_filename(512, 50, 0, 0, "city", (255, 255, 255)) in files
+        # baseline mode does NOT sweep all bgs even on the baseline master
+        assert c.render_composite_filename(512, 50, 0, 0, "city", (0, 0, 0)) not in files
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
