@@ -97,7 +97,7 @@ every external resource the method needs and how to prepare it.
 python cli.py --prompt "a cozy living room with a sofa and coffee table"
 ```
 
-With variants and rendering:
+With variants and a single baseline render:
 
 ```bash
 python cli.py --prompt "..." --variants --render \
@@ -109,7 +109,10 @@ python cli.py --prompt "..." --variants --render \
 
 | Flag | Description |
 |---|---|
-| `--prompt` | (required) Textual scene description. |
+| `--prompt` | (one of `--prompt`/`--path` required) Textual scene description → generates a new run. |
+| `--path` | (one of `--prompt`/`--path` required) Re-render an existing `outputs/<datetime>/` folder without generating (renders every `base` + `variant_*` scene). |
+| `--render` | (at most one of `--render`/`--render-all`) Single baseline render per scene: 512px, white bg, "city" env, 50mm, top-down, yaw 0 (bpa). Saves a transparent master + a white-bg composite. |
+| `--render-all` | (at most one of `--render`/`--render-all`) Full OFAT sweep per scene (resolution/focal/pitch/yaw/env/background factor sweeps). |
 | `--model` | Chat-LLM model for **all** reasoning roles (extraction, selection, constraints, order, placement, refinement). |
 | `--temperature` | Sampling temperature for the chat-LLM roles (0–2). |
 | `--base-url` | LLM API base URL. |
@@ -120,7 +123,6 @@ python cli.py --prompt "..." --variants --render \
 | `--num-objects` | Override the number of different objects to use. |
 | `--no-refinement` | Skip the placement refinement step. |
 | `--variants` | Also generate `variant_01..04` from the base scene (free). |
-| `--render` | Render PNGs (Blender) for the base (and variants). Off by default — JSON-only is fast and free. |
 | `--seed` | Random seed for the seeded variants (`variant_01_half`, `variant_03_scrambled`). |
 | `--output-root` | Root dir for timestamped run folders (default `outputs`). |
 
@@ -145,7 +147,7 @@ outputs/20260708-023434/
 │   ├── prompt.txt
 │   ├── raw_blender.json
 │   ├── meshes/                  # each placed object's source mesh (.glb/.fbx/...)
-│   └── renderings/              # only with --render
+│   └── renderings/              # PNGs, only with --render / --render-all
 ├── variant_01_half/             # ~50% of objects (seeded subset)
 ├── variant_02_biggest-only/     # only the largest object (by bbox volume)
 ├── variant_03_scrambled/        # re-positioned + re-rotated within the scene footprint
@@ -153,7 +155,27 @@ outputs/20260708-023434/
 ```
 
 Each variant folder has the **same layout** as `base/` (`placed_objects.json`,
-`placed_objects_data.json`, `prompt.txt`, `raw_blender.json`, `meshes/`).
+`placed_objects_data.json`, `prompt.txt`, `raw_blender.json`, `meshes/`,
+`renderings/`).
+
+**Rendering** uses the vendored `rendering/bpa.py` (from vlmunr):
+`bpa.render_perspective(fit_ratio=1.0)` tight-fits the camera; each scene is
+rendered as a transparent RGBA master, then a solid background colour is
+composited onto it. Walls use normal-driven back-face culling (camera-facing
+faces transparent) so the camera always sees into the room while far walls stay
+visible (dollhouse). Filenames use the cross-method **common** pitch convention
+(0 = top-down; this renderer stores 90 = top-down internally and remaps with
+`90 - p`):
+
+```
+render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>.png            # transparent master
+render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>_bg-<r>-<g>-<b>.png  # composited
+```
+
+e.g. `render_res-512_focal-50_pitch-0_yaw-0_env-city.png` (transparent) and
+`render_res-512_focal-50_pitch-0_yaw-0_env-city_bg-255-255-255.png` (white).
+`--render` = single baseline render; `--render-all` = full OFAT sweep; `--path`
+re-renders an existing run folder without regenerating.
 
 > **Variants do not regenerate.** `variant_01..04` fork the base scene's
 > `placed_objects` / `placed_objects_data` and rewrite them locally — no LLM

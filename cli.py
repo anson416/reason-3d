@@ -96,14 +96,14 @@ OUTPUT LAYOUT
     │   ├── prompt.txt
     │   ├── raw_blender.json         # converted for the renderer
     │   ├── meshes/                  # each placed object's source mesh (.glb/.fbx/...)
-    │   └── renderings/              # PNGs, only with --render (named "renderings")
+    │   └── renderings/              # PNGs, only with --render / --render-all
     ├── variant_01_half/             # ~50% of objects (seeded subset), positions intact
     ├── variant_02_biggest-only/     # only the largest object (by bbox volume)
-    ├── variant_03_scrambled/         # re-positioned + re-rotated within the scene footprint
+    ├── variant_03_scrambled/        # re-positioned + re-rotated within the scene footprint
     └── variant_04_worst-object/     # each asset swapped to the globally least-similar prefab
 
 Each variant folder has the SAME layout as ``base/`` (placed_objects.json,
-placed_objects_data.json, prompt.txt, raw_blender.json, meshes/).
+placed_objects_data.json, prompt.txt, raw_blender.json, meshes/, renderings/).
 
 The four variants are forked from the base scene's saved JSON and rewritten
 locally — NO LLM and NO embedding API calls — so the only billed work is the
@@ -111,6 +111,51 @@ single base-scene generation. ``variant_04_worst-object`` "hacks" the asset-
 selection sort (which normally picks the MOST-similar prefab) to pick the
 LEAST-similar one, computed from the stored embeddings of the chosen asset, so
 it needs no API at all.
+
+------------------------------------------------------------------------
+RENDERING (bpa logic; --render / --render-all / --path)
+------------------------------------------------------------------------
+Rendering uses the vendored ``rendering/bpa.py`` (from vlmunr):
+``bpa.render_perspective(fit_ratio=1.0)`` tight-fits the camera to the scene;
+each scene is first rendered as a TRANSPARENT RGBA master, then a solid
+background colour is composited onto it (``bpa``-equivalent PIL compositing).
+Walls use normal-driven back-face culling (camera-facing faces transparent) so
+the camera always sees into the room while far walls stay visible (dollhouse).
+
+Exactly one of ``--prompt`` (generate a new run) or ``--path`` (re-render an
+existing ``outputs/<datetime>/`` without generating) is required. At most one
+of ``--render`` / ``--render-all`` may be passed:
+
+- ``--render``     : single BASELINE render per scene — 512px, white
+                     (255,255,255) bg, "city" env map, 50mm, top-down, yaw 0.
+                     Writes a transparent master + a white-bg composite.
+- ``--render-all`` : full OFAT sweep per scene — one-factor-at-a-time sweeps
+                     over resolution {196,224,256,336,384,448,512,768,1024},
+                     focal {16,24,35,50,85,100,200}, pitch {0..90}, yaw
+                     {0,45,...,315} (at pitch 45), env map {8 maps}, and
+                     background {10 colours}; every non-swept factor is held at
+                     the baseline. Background is the swept factor only on the
+                     baseline-camera master; every other master is composited
+                     with the white baseline background only.
+- ``--path DIR``   : skip generation; render every ``base`` + ``variant_*``
+                     subfolder of DIR that has ``raw_blender.json``. Requires
+                     ``--render`` or ``--render-all``.
+
+CAMERA / FILENAME CONVENTION: this renderer stores pitch NATIVELY as 90 ==
+top-down (opposite of bpa, where 0 == top-down). For cross-method filename
+consistency, PNG filenames always use the COMMON convention (0 == top-down):
+a native pitch p is written as (90 - p). So the top-down baseline appears as
+``pitch-0`` in the filename. Yaw is identical in both conventions.
+
+Filename scheme (COMMON pitch convention):
+
+    # transparent master
+    render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>.png
+    # background-composited
+    render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>_bg-<r>-<g>-<b>.png
+
+e.g. ``render_res-512_focal-50_pitch-0_yaw-0_env-city.png`` (transparent) and
+``render_res-512_focal-50_pitch-0_yaw-0_env-city_bg-255-255-255.png`` (white).
 
 ------------------------------------------------------------------------
 USAGE
@@ -123,9 +168,16 @@ USAGE
         --model gpt-5.1-2025-11-13 --temperature 0.7 \
         --base-url https://api.openai.com/v1 --api-key sk-...
 
-    # Point at a non-default asset folder and data dir, then render PNGs
+    # Generate + a single baseline render of the base (and variants)
     python cli.py --prompt "..." --variants --render \
         --assets ~/.objathor-assets/2023_09_23/assets --data-dir ./data
+
+    # Full OFAT sweep of the base (and variants)
+    python cli.py --prompt "..." --variants --render-all
+
+    # Re-render an existing run folder without regenerating (baseline or sweep)
+    python cli.py --path outputs/20260708-023434/ --render
+    python cli.py --path outputs/20260708-023434/ --render-all
 """
 
 import argparse

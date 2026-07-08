@@ -19,38 +19,45 @@ repos.
 | `run2.sh` | Emits the variant-render command list (Cartesian product of scenes × variants). |
 | `run3.sh` | Materialized variant-render list (scenes × 6 variants). |
 
-The renderer itself (`rendering/render_layout.py`, `rendering/render_scene.py`) is
-upstream Reason-3D, lightly adapted; `rendering/hdri/*.exr` supplies the 8 environment
-maps.
+The renderer itself (`rendering/render_layout.py`, `rendering/render_scene.py`)
+is built on the vendored `rendering/bpa.py` (copied from vlmunr):
+`bpa.render_perspective(fit_ratio=1.0)` tight-fits the camera, each scene is
+rendered as a transparent RGBA master then a solid background is composited
+onto it, and walls use normal-driven back-face culling (dollhouse).
+`rendering/hdri/*.exr` supplies the 8 environment maps.
 
 ## Render filename scheme
 
-Two-phase. Blender writes a transparent master, then compositing inserts the
-background colour:
+Two-phase. Blender (phase 1, `render_layout.py`) writes a transparent master;
+plain-Python compositing (phase 2, `render_scene.py`) inserts the background
+colour. Filenames use the cross-method **common** pitch convention (0 = top-down):
 
 ```
-# transparent (5 value tokens)
-render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png
-# composited (7 value tokens — RGB between focal and pitch)
-render_{res}_{focal}_{r}_{g}_{b}_{pitch}_{yaw}_{hdri}.png
+# transparent master (5 value tokens, dash-prefixed)
+render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>.png
+# composited (master + _bg-<r>-<g>-<b> suffix)
+render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>_bg-<r>-<g>-<b>.png
 ```
 
-e.g. `render_512_50_128_128_128_90_0_city.png`. PNGs land in
-`results/<timestamp>/[<variant>/]renderings/`.
+e.g. `render_res-512_focal-50_pitch-0_yaw-0_env-city.png` (transparent) and
+`render_res-512_focal-50_pitch-0_yaw-0_env-city_bg-255-255-255.png` (white).
+PNGs land in `outputs/<datetime>/[<variant>/]renderings/`.
 
 ## Swept factors (`config.py`)
 
 | Factor | Levels |
 |---|---|
-| `RESOLUTIONS` | 224, 256, 384, 448, 512, 640, 768, 1024 |
-| `BACKGROUND_COLORS` | grays 0, 18, 65, 117, 128, 186, 204, 255 |
-| `FOCAL_LENGTHS` | 24, 35, 50, 85, 100, 200 |
-| `PITCHS` | 60, 90 (90 = top-down in this renderer's camera convention) |
-| `YAWS` | 0, 30, 60, …, 330 (12 azimuths) |
+| `RESOLUTIONS` | 196, 224, 256, 336, 384, 448, 512, 768, 1024 |
+| `BACKGROUND_COLORS` | grays 0, 65, 118, 128, 186, 204, 255 + RGB chromatic (10) |
+| `FOCAL_LENGTHS` | 16, 24, 35, 50, 85, 100, 200 |
+| `PITCHS` | 90, 75, 60, 45, 30, 15, 0 (native; 90 = top-down; **remapped to 0=top-down in filenames**) |
+| `YAWS` | 0, 45, 90, 135, 180, 225, 270, 315 (8 azimuths) |
 | `HDRIS` | city, courtyard, forest, interior, night, studio, sunrise, sunset |
 
 A single sweep holds all non-swept factors at the baseline (res 512, focal 50,
-bg 128, hdri city, top-down).
+bg **white (255,255,255)**, hdri city, top-down). Background is the swept factor
+only on the baseline-camera master; every other master is composited with the
+white baseline background only (OFAT design).
 
 ## Content-perturbation variants (`generate_variants.py`)
 
@@ -82,28 +89,31 @@ Factor levels were brought in line with the paper's Table 1 and the render loops
 switched from a full Cartesian product to **one-factor-at-a-time (OFAT)**:
 
 - `RESOLUTIONS` = 196, 224, 256, 336, 384, 448, 512, 768, 1024
-- `BACKGROUND_COLORS` = 6 grays (0, 65, 128, 186, 204, 255) + 3 chromatic
-  (red, green, blue)
+- `BACKGROUND_COLORS` = 7 grays (0, 65, 118, 128, 186, 204, 255) + 3 chromatic
+  (red, green, blue) — 10 colours; baseline bg is white (255,255,255)
 - `FOCAL_LENGTHS` = 16, 24, 35, 50, 85, 100, 200
-- `PITCHS` = 90, 75, 60, 45, 30, 15, 0 (**pitch 90 = top-down** in this
-  renderer's convention; swept as tilt-from-top-down)
+- `PITCHS` = 90, 75, 60, 45, 30, 15, 0 (**pitch 90 = top-down** natively;
+  remapped to 0 = top-down in filenames and when passed to bpa)
 - `YAWS` = 8 azimuths at 45° steps, swept at the oblique pitch `YAW_SWEEP_PITCH`
   (45)
 - `config.ofat_camera_configs()` yields the OFAT (res/focal/pitch/yaw/hdri)
   master set; backgrounds are composited only on the baseline-camera master
   (the rest get the baseline background), matching the OFAT design.
 
-Two extra content-perturbation variants were added to `generate_variants.py`
-(now 9 variants total):
+Camera-convention note: this renderer's NATIVE top-down pitch (90) is the
+opposite of the bpa-based methods (genxr / HSM / LayoutVLM / IDesign, where
+0 = top-down). Rendering now uses `bpa.render_perspective` (bpa convention,
+0 = top-down), so a native pitch `p` is remapped with `config.native_to_common_pitch(p) = 90 - p`
+both when calling bpa and in the PNG filename. Cross-method filenames therefore
+all use 0 = top-down. Yaw is identical in both conventions.
 
-- `variant_scramble` — relocate every object within the scene's XZ footprint
-  (object set, rotation, size preserved; arrangement destroyed).
-- `variant_subst_within` / `variant_subst_cross` — substitute each asset for the
-  most-similar same-category instance / a dissimilar different-category asset
-  (position and rotation fixed).
+## Rendering entry points (`cli.py`)
 
-Camera-convention note: this renderer's top-down pitch (90) is the opposite of
-the bpa-based methods (genxr / HSM / LayoutVLM / IDesign, where 0 = top-down).
-Cross-method viewpoint analysis maps each method onto a common
-"tilt-from-top-down" axis.
+- `--prompt "…"` generates a new `outputs/<datetime>/` run (base + `--variants`).
+- `--path outputs/<datetime>/` re-renders an existing run folder without
+  generating (every `base` + `variant_*` with `raw_blender.json`).
+- `--render` = single baseline render per scene (512/white/city/50mm/top-down/0).
+- `--render-all` = full OFAT sweep per scene.
+- `--prompt`/`--path` are mutually exclusive (one required);
+  `--render`/`--render-all` are mutually exclusive (optional).
 
