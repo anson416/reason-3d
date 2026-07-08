@@ -50,19 +50,24 @@ ColorRGB = tuple[int, int, int]
 
 HDRI_DIR = os.path.join(git_root, "rendering", "hdri")
 # Factor levels for the VLM-unreliability audit (paper Table 1).
-# CAMERA CONVENTION: this renderer uses pitch == 90 deg for the top-down view
-# (camera directly above; cam_z = distance*sin(pitch)) and pitch == 0 for a
-# horizontal eye-level view -- the OPPOSITE of the bpa-based methods
-# (genxr / HSM / LayoutVLM / IDesign), where pitch == 0 is top-down. The
-# cross-method analysis maps each method onto a common "tilt-from-top-down"
-# axis via the per-method camera manifest; see INTEGRATION.md.
+# CAMERA CONVENTION: NATIVELY this renderer uses pitch == 90 deg for the
+# top-down view and pitch == 0 for a horizontal eye-level view -- the OPPOSITE
+# of the bpa-based methods (genxr / HSM / LayoutVLM / IDesign), where pitch == 0
+# is top-down. For cross-method filename consistency, PNG filenames always use
+# the COMMON convention (0 == top-down): a native pitch p is written as
+# (90 - p) via native_to_common_pitch(). The same remapped value is passed to
+# bpa.render_perspective (which also uses 0 == top-down). Yaw is identical in
+# both conventions and passes through unchanged. See INTEGRATION.md.
 RESOLUTIONS: list[int] = [196, 224, 256, 336, 384, 448, 512, 768, 1024]
+# Background colours swept over the baseline-camera master (paper Table 1).
+# 7 grays (incl. 118, a physically-derived midpoint) + 3 chromatic.
 BACKGROUND_COLORS: list[ColorRGB] = [
     (0, 0, 0),
-    (65, 65, 65),  # 5% physically
+    (65, 65, 65),
+    (118, 118, 118),
     (128, 128, 128),
-    (186, 186, 186),  # 50% physically
-    (204, 204, 204),  # 80% visually
+    (186, 186, 186),
+    (204, 204, 204),
     (255, 255, 255),
     (255, 0, 0),  # chromatic (paper Table 1)
     (0, 255, 0),
@@ -88,9 +93,9 @@ HDRIS: list[str] = [
 # Baselines (held constant for any factor not being swept).
 BASELINE_RES: int = 512
 BASELINE_FOCAL: int = 50
-BASELINE_BG: ColorRGB = (128, 128, 128)
+BASELINE_BG: ColorRGB = (255, 255, 255)  # white baseline (audit single-render default)
 BASELINE_HDRI: str = "city"
-BASELINE_PITCH: int = 90  # top-down in THIS renderer's convention
+BASELINE_PITCH: int = 90  # top-down in THIS renderer's native convention
 BASELINE_YAW: int = 0
 
 
@@ -134,3 +139,49 @@ def ofat_camera_configs() -> list[dict]:
 def ofat_backgrounds() -> list[ColorRGB]:
     """Background colours composited over the baseline-camera master (1b)."""
     return list(BACKGROUND_COLORS)
+
+
+# ---------------------------------------------------------------------------
+# Camera-convention + filename helpers (pure, no bpy -- unit-tested offline).
+# ---------------------------------------------------------------------------
+# This renderer's NATIVE pitch convention is 90 == top-down (camera directly
+# above), opposite to the bpa-based methods where 0 == top-down. For
+# cross-method consistency, FILENAMES always use the COMMON convention
+# (0 == top-down): a native pitch p is written as (90 - p). bpa.render_perspective
+# also uses 0 == top-down, so the same remapped value is passed to bpa. Yaw is
+# identical in both conventions and passes through unchanged.
+
+
+def native_to_common_pitch(pitch: int) -> int:
+    """Map a NATIVE pitch (90 == top-down) to the COMMON convention (0 == top-down)."""
+    return 90 - pitch
+
+
+def render_master_filename(
+    res: int, focal: int, common_pitch: int, yaw: int, env: str
+) -> str:
+    """Transparent-master PNG name (COMMON pitch convention).
+
+    ``render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>.png``
+    """
+    return f"render_res-{res}_focal-{focal}_pitch-{common_pitch}_yaw-{yaw}_env-{env}.png"
+
+
+def render_composite_filename(
+    res: int, focal: int, common_pitch: int, yaw: int, env: str, bg: ColorRGB
+) -> str:
+    """Background-composited PNG name: master stem + ``_bg-<r>-<g>-<b>``."""
+    return render_master_filename(res, focal, common_pitch, yaw, env).replace(
+        ".png", f"_bg-{bg[0]}-{bg[1]}-{bg[2]}.png"
+    )
+
+
+def baseline_common_key() -> tuple:
+    """Baseline master key in the COMMON filename convention (0 == top-down)."""
+    return (
+        BASELINE_RES,
+        BASELINE_FOCAL,
+        native_to_common_pitch(BASELINE_PITCH),
+        BASELINE_YAW,
+        BASELINE_HDRI,
+    )
