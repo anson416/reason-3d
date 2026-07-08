@@ -360,9 +360,12 @@ def generate_scene(
     )
 
     # Convert for Blender (in-process; writes raw_blender.json into scene_dir).
-    from rendering.convert_for_blender import convert
+    from rendering.convert_for_blender import convert, export_meshes
 
     convert(scene_dir)
+    # Copy each placed object's source mesh into <scene_dir>/meshes/ so the
+    # scene folder is self-contained (mesh + layout + optional renderings).
+    export_meshes(scene_dir)
     return input_objects
 
 

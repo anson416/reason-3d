@@ -144,12 +144,16 @@ outputs/20260708-023434/
 │   ├── placed_objects_data.json
 │   ├── prompt.txt
 │   ├── raw_blender.json
+│   ├── meshes/                  # each placed object's source mesh (.glb/.fbx/...)
 │   └── renderings/              # only with --render
 ├── variant_01_half/             # ~50% of objects (seeded subset)
 ├── variant_02_biggest-only/     # only the largest object (by bbox volume)
 ├── variant_03_scrambled/        # re-positioned + re-rotated within the scene footprint
 └── variant_04_worst-object/     # each asset swapped to the globally least-similar prefab
 ```
+
+Each variant folder has the **same layout** as `base/` (`placed_objects.json`,
+`placed_objects_data.json`, `prompt.txt`, `raw_blender.json`, `meshes/`).
 
 > **Variants do not regenerate.** `variant_01..04` fork the base scene's
 > `placed_objects` / `placed_objects_data` and rewrite them locally — no LLM

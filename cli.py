@@ -95,11 +95,15 @@ OUTPUT LAYOUT
     │   ├── placed_objects_data.json # per-object guid / size / boundsCenter
     │   ├── prompt.txt
     │   ├── raw_blender.json         # converted for the renderer
-    │   └── renderings/              # PNGs, only with --render
+    │   ├── meshes/                  # each placed object's source mesh (.glb/.fbx/...)
+    │   └── renderings/              # PNGs, only with --render (named "renderings")
     ├── variant_01_half/             # ~50% of objects (seeded subset), positions intact
     ├── variant_02_biggest-only/     # only the largest object (by bbox volume)
     ├── variant_03_scrambled/         # re-positioned + re-rotated within the scene footprint
     └── variant_04_worst-object/     # each asset swapped to the globally least-similar prefab
+
+Each variant folder has the SAME layout as ``base/`` (placed_objects.json,
+placed_objects_data.json, prompt.txt, raw_blender.json, meshes/).
 
 The four variants are forked from the base scene's saved JSON and rewritten
 locally — NO LLM and NO embedding API calls — so the only billed work is the

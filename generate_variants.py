@@ -28,7 +28,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from build_scene.utilities import get_rotated_bounding_box
 from config import EMBEDDINGS, OBJ_DATA
 from preprocessing.CreateEmbeddings import get_embedding
-from rendering.convert_for_blender import convert
+from rendering.convert_for_blender import convert, export_meshes
 
 
 def load_scene(scene_dir):
@@ -60,6 +60,10 @@ def write_variant(
     with open(os.path.join(variant_dir, "prompt.txt"), "w") as f:
         f.write(prompt_text)
     convert(variant_dir)
+    # Copy each placed object's source mesh into <variant_dir>/meshes/ so every
+    # variant folder is self-contained (variant_04 swaps guids, so its meshes
+    # differ from the base's -- the copy is keyed by the new guid).
+    export_meshes(variant_dir)
 
 
 def generate_reduced_variants(

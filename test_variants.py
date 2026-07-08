@@ -162,6 +162,9 @@ def test_named_variants_produce_all_four():
             for fn in ("placed_objects.json", "placed_objects_data.json",
                        "prompt.txt", "raw_blender.json"):
                 assert os.path.isfile(os.path.join(d, fn)), (v, fn)
+            # every variant folder also gets a meshes/ dir (export_meshes),
+            # even when no source mesh files are present on this machine.
+            assert os.path.isdir(os.path.join(d, "meshes")), (v, "meshes")
 
 
 if __name__ == "__main__":
