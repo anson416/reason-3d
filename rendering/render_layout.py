@@ -3,27 +3,31 @@ import json
 import math
 import os
 import sys
-from itertools import product
 
 import bpy
-from mathutils import Euler, Vector
+from mathutils import Vector
 
 sys.path.append(os.path.abspath("."))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # rendering/ (for `import bpa`)
+from config import (  # noqa: E402
     ASSETS,
-    FOCAL_LENGTHS,
+    BASELINE_FOCAL,
+    BASELINE_HDRI,
+    BASELINE_PITCH,
+    BASELINE_RES,
+    BASELINE_YAW,
     HDRI_DIR,
-    HDRIS,
-    PITCHS,
-    RESOLUTIONS,
-    YAWS,
+    native_to_common_pitch,
+    ofat_camera_configs,
+    render_master_filename,
 )
+import bpa  # noqa: E402  (vendored from vlmunr -- bpy required)
 
 # === PARSE ARGS ===
-# Supports both `blender --background --python this.py -- --scene-dir X` (args
-# after the `--` separator) and direct `python this.py --scene-dir X` (bpy as a
-# module, no separator).
+# Supports both `blender --background --python this.py -- --scene-dir X --mode M`
+# (args after the `--` separator) and direct `python this.py --scene-dir X --mode M`
+# (bpy as a module, no separator).
 if "--" in sys.argv:
     argv = sys.argv[sys.argv.index("--") + 1 :]
 else:
@@ -32,9 +36,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--scene-dir", required=True, help="Path to timestamped scene dir"
 )
+parser.add_argument(
+    "--mode",
+    choices=["baseline", "ofat"],
+    default="baseline",
+    help="baseline = single baseline render (512/50/top-down/0/city); "
+         "ofat = full one-factor-at-a-time sweep.",
+)
 args, _ = parser.parse_known_args(argv)
 
 scene_dir = args.scene_dir
+render_mode = args.mode
 
 
 # === CONFIG ===
@@ -57,6 +69,12 @@ wall_material_name = os.path.basename(wall_path)[:-9]
 renderings_dir = os.path.join(scene_dir, "renderings")
 os.makedirs(renderings_dir, exist_ok=True)
 
+
+# === CLEAR SCENE (bpa: purges objects + all datablocks) ===
+# NOTE: bpa.clear() also removes materials, so the .blend materials MUST be
+# loaded AFTER clear() (the old code cleared only objects and could load first).
+bpa.clear()
+
 with bpy.data.libraries.load(floor_path, link=False) as (data_from, data_to):
     if material_name in data_from.materials:
         data_to.materials.append(material_name)
@@ -70,9 +88,6 @@ with bpy.data.libraries.load(wall_path, link=False) as (data_from, data_to):
             f"Error: Material '{wall_material_name}' not found in '{wall_blend_filepath}'"
         )
 
-# === CLEAR DEFAULT SCENE ===
-bpy.ops.object.select_all(action="SELECT")
-bpy.ops.object.delete(use_global=False)
 
 # === IMPORT LAYOUT ===
 with open(unity_layout_file, "r") as f:
@@ -133,7 +148,7 @@ for info in layout:
 
     objects_after_import = set(bpy.context.scene.objects)
     new_objects = objects_after_import - objects_before_import
-    # 1. Filter out non-mesh objects and identify the target objects for joining
+    # 1. Filter out non-mesh objects and identify the target objects for join
     mesh_objects_to_join = [obj for obj in new_objects if obj.type == "MESH"]
 
     # 2. Deselect everything
@@ -283,11 +298,13 @@ else:
     floor.data.materials.append(bpy.data.materials[material_name])
 
 
-# === ADD FOUR WALLS ===
+# === ADD FOUR WALLS (dollhouse: normal-driven back-face culling) ===
 
 wall_height = 2.7
-scene_width = max_coord.x - min_coord.x
-scene_depth = max_coord.y - min_coord.y
+_wx = x_extent
+_wy = y_extent
+_wcx = floor_center_x
+_wcy = floor_center_y
 
 polyhaven_material_name = wall_material_name
 polyhaven_mat = bpy.data.materials.get(polyhaven_material_name)
@@ -295,7 +312,7 @@ polyhaven_mat = bpy.data.materials.get(polyhaven_material_name)
 if not polyhaven_mat:
     raise NameError(
         f"Error: Material '{polyhaven_material_name}' not found. "
-        "Please ensure it's loaded in the blend file before running the script."
+        "Please ensure it's loaded in the blend file before running this script."
     )
 
 
@@ -314,234 +331,95 @@ def create_wall(name, location, rotation, length_scale):
     return wall
 
 
-# VLMUNR_PATCH dollhouse walls
-# Build 4 walls around the object-bbox footprint. Each is tagged VLMUNR_WALL so
-# it can be back-face culled per camera (dollhouse view). Margin so walls sit at
-# the room edge, not clipping furniture.
-_wx = x_extent
-_wy = y_extent
-_wcx = floor_center_x
-_wcy = floor_center_y
-_VLMUNR_WALLS = []
-def _mk_wall(name, location, rotation, length_scale, inward_normal):
-    w = create_wall(name, location, rotation, length_scale)
-    w["VLMUNR_WALL"] = 1
-    # store inward normal (unit XY) + wall center for culling decisions
-    w["VLMUNR_NX"], w["VLMUNR_NY"] = inward_normal
-    _VLMUNR_WALLS.append(w)
-    return w
-# Back wall (Y+), plane faces -Y inward
-_mk_wall("BackWall",  (_wcx, _wcy + _wy/2, wall_height/2), (math.radians(90), 0, 0), _wx, (0.0, -1.0))
-# Front wall (Y-), faces +Y inward
-_mk_wall("FrontWall", (_wcx, _wcy - _wy/2, wall_height/2), (math.radians(90), 0, math.radians(180)), _wx, (0.0, 1.0))
-# Left wall (X-), faces +X inward
-_mk_wall("LeftWall",  (_wcx - _wx/2, _wcy, wall_height/2), (math.radians(90), 0, math.radians(90)), _wy, (1.0, 0.0))
-# Right wall (X+), faces -X inward
-_mk_wall("RightWall", (_wcx + _wx/2, _wcy, wall_height/2), (math.radians(90), 0, math.radians(-90)), _wy, (-1.0, 0.0))
+def apply_backface_culling(material):
+    """Dollhouse convention: make camera-facing (front) faces transparent and
+    keep back-facing faces visible, driven by the surface normal. Mirrors
+    bpa.Builder.add_material(..., backface_culling=True) node wiring, applied to
+    an existing material so the loaded .blend wall texture is preserved.
 
-def cull_walls(pitch_deg, yaw_deg):
-    """Dollhouse back-face culling: hide walls whose outward normal faces AWAY
-    from the camera (i.e. the near walls between camera and room), so the camera
-    always sees inside. At near-top-down (pitch>=85) walls are edge-on -> show
-    all."""
-    import math as _m
-    # camera horizontal direction (from center toward camera), same spherical
-    # convention as set_camera: yaw rotates the -Y offset around Z.
-    pr = _m.radians(pitch_deg); yr = _m.radians(yaw_deg)
-    lx, ly = 0.0, -_m.cos(pr)
-    cam_dx = lx*_m.cos(yr) - ly*_m.sin(yr)
-    cam_dy = lx*_m.sin(yr) + ly*_m.cos(yr)
-    top_down = pitch_deg >= 85.0
-    for w in _VLMUNR_WALLS:
-        if top_down:
-            w.hide_render = False
-            continue
-        # outward normal = -inward normal
-        ox, oy = -w["VLMUNR_NX"], -w["VLMUNR_NY"]
-        # hide the wall if its OUTWARD face points toward the camera (near wall)
-        facing_cam = (ox*cam_dx + oy*cam_dy) > 0.15
-        w.hide_render = facing_cam
-
-
-# === COMPUTE BOUNDING SPHERE FOR CAMERA POSITIONING ===
-all_objs = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
-if not all_objs:
-    raise RuntimeError("No mesh objects found in scene.")
-
-bs_min = Vector((float("inf"), float("inf"), float("inf")))
-bs_max = Vector((float("-inf"), float("-inf"), float("-inf")))
-
-for obj in all_objs:
-    bpy.context.view_layer.update()
-    for corner in obj.bound_box:
-        world_corner = obj.matrix_world @ Vector(corner)
-        for i in range(3):
-            bs_min[i] = min(bs_min[i], world_corner[i])
-            bs_max[i] = max(bs_max[i], world_corner[i])
-
-scene_center = (bs_min + bs_max) / 2
-scene_radius = (bs_max - scene_center).length
-
-
-# === DELETE ALL EXISTING LIGHTS ===
-for obj in [o for o in bpy.data.objects if o.type == "LIGHT"]:
-    bpy.data.objects.remove(obj, do_unlink=True)
-
-# === SET UP AREA LIGHT ===
-scene = bpy.context.scene
-
-area_light_name = "RoomAreaLight"
-light_data = bpy.data.lights.new(name=area_light_name, type="AREA")
-light_data.energy = 1000
-light_data.size = 10
-
-light = bpy.data.objects.new(name=area_light_name, object_data=light_data)
-scene.collection.objects.link(light)
-light.location = (floor_center_x, floor_center_y, 4)
-
-
-# === GPU / CYCLES SETUP ===
-def setup_cycles():
-    cycles_prefs = bpy.context.preferences.addons["cycles"].preferences
-    for device_type in ["OPTIX", "CUDA", "HIP", "METAL", "NONE"]:
-        try:
-            cycles_prefs.compute_device_type = device_type
-            break
-        except TypeError:
-            continue
-    cycles_prefs.get_devices()
-    gpu_available = False
-    for device in cycles_prefs.devices:
-        if device.type == "CPU":
-            device.use = False
-        else:
-            device.use = True
-            gpu_available = True
-    if not gpu_available:
-        for device in cycles_prefs.devices:
-            if device.type == "CPU":
-                device.use = True
-                break
-    scene.render.engine = "CYCLES"
-    scene.cycles.device = "GPU" if gpu_available else "CPU"
-    scene.cycles.use_adaptive_sampling = True
-    scene.cycles.adaptive_threshold = 0.02
-    scene.cycles.samples = 128
-    scene.cycles.use_denoising = True
-    scene.render.film_transparent = True
-    scene.render.image_settings.file_format = "PNG"
-    scene.render.image_settings.color_mode = "RGBA"
-
-
-setup_cycles()
-
-
-# === HDRI SETUP HELPER ===
-def set_hdri(hdri_name, strength=0.5):
-    world = scene.world
-    if world is None:
-        bpy.ops.world.new()
-        world = bpy.context.scene.world = bpy.data.worlds[-1]
-    world.use_nodes = True
-    nodes = world.node_tree.nodes
-    links = world.node_tree.links
-
-    # Remove existing environment texture nodes
-    for node in list(nodes):
-        if node.type == "TEX_ENVIRONMENT":
-            nodes.remove(node)
-
-    bg = nodes["Background"]
-    bg.inputs[1].default_value = strength
-
-    env_path = os.path.join(HDRI_DIR, f"{hdri_name}.exr")
-    env_node = nodes.new("ShaderNodeTexEnvironment")
-    env_node.image = bpy.data.images.load(env_path, check_existing=True)
-    links.new(env_node.outputs[0], bg.inputs[0])
-
-
-# === CAMERA SETUP HELPER ===
-def set_camera(pitch_deg, yaw_deg, focal_length):
-    # Remove existing cameras
-    for obj in [o for o in bpy.data.objects if o.type == "CAMERA"]:
-        bpy.data.objects.remove(obj, do_unlink=True)
-
-    cam_data = bpy.data.cameras.new("RenderCamera")
-    cam_obj = bpy.data.objects.new("RenderCamera", cam_data)
-    scene.collection.objects.link(cam_obj)
-    scene.camera = cam_obj
-
-    cam_data.type = "PERSP"
-    cam_data.lens_unit = "MILLIMETERS"
-    cam_data.lens = focal_length
-
-    # Camera distance from bounding sphere
-    half_fov = cam_data.angle / 2
-    distance = (
-        scene_radius / math.sin(half_fov) if half_fov > 0 else scene_radius * 3
+    ShaderNodeNewGeometry.Backfacing is 1 for back-facing faces, 0 for front.
+    MixShader(Fac=Backfacing): Fac=0 -> input[1]=Transparent (front->see-through),
+    Fac=1 -> input[2]=BSDF (back->visible). So near walls' exteriors become
+    transparent (camera sees into the room) while far walls remain visible.
+    """
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    output = nodes.get("Material Output") or next(
+        (n for n in nodes if n.type == "OUTPUT_MATERIAL"), None
     )
-
-    # Position camera using pitch/yaw (spherical coordinates)
-    pitch_rad = math.radians(pitch_deg)
-    yaw_rad = math.radians(yaw_deg)
-
-    # Place camera at yaw=0 (looking along -Y), then rotate by yaw around Z
-    # This avoids gimbal lock when pitch=90 (top-down), where cos(pitch)=0
-    # would otherwise zero out the yaw contribution.
-    local_x = 0.0
-    local_y = -distance * math.cos(pitch_rad)
-    local_z = distance * math.sin(pitch_rad)
-
-    # Rotate the offset around Z by yaw
-    cam_x = (
-        scene_center.x
-        + local_x * math.cos(yaw_rad)
-        - local_y * math.sin(yaw_rad)
+    if output is None:
+        output = nodes.new("ShaderNodeOutputMaterial")
+    bsdf = nodes.get("Principled BSDF") or next(
+        (n for n in nodes if n.type == "BSDF_PRINCIPLED"), None
     )
-    cam_y = (
-        scene_center.y
-        + local_x * math.sin(yaw_rad)
-        + local_y * math.cos(yaw_rad)
-    )
-    cam_z = scene_center.z + local_z
-
-    cam_obj.location = (cam_x, cam_y, cam_z)
-
-    # Point camera toward scene center
-    direction = scene_center - cam_obj.location
-    rot_quat = direction.to_track_quat("-Z", "Y")
-    # For top-down (or near top-down) views, apply yaw manually since
-    # to_track_quat cannot disambiguate the up-axis roll.
-    if abs(pitch_deg) >= 89.0:
-        yaw_euler = Euler((0, 0, yaw_rad), "XYZ")
-        rot_quat = rot_quat @ yaw_euler.to_quaternion()
-    cam_obj.rotation_euler = rot_quat.to_euler()
-
-    cam_data.clip_start = 0.01
-    cam_data.clip_end = distance * 3
+    if bsdf is None:
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    # Drop any existing link into the output's Surface socket.
+    for link in list(links):
+        if link.to_node == output and link.to_socket == output.inputs["Surface"]:
+            links.remove(link)
+    mix = nodes.new("ShaderNodeMixShader")
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    geometry = nodes.new("ShaderNodeNewGeometry")
+    links.new(bsdf.outputs["BSDF"], mix.inputs[2])
+    links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    links.new(geometry.outputs["Backfacing"], mix.inputs["Fac"])
+    links.new(transparent.outputs["BSDF"], mix.inputs[1])
 
 
-# === RENDER LOOP (OFAT: paper Table 1, not a full Cartesian product) ===
-from config import ofat_camera_configs  # noqa: E402
+# Apply the dollhouse back-face culling once to the shared wall material.
+apply_backface_culling(polyhaven_mat)
 
-# Group configs by HDRI so the (expensive) environment-map swap happens once
-# per HDRI rather than per render.
-_configs = ofat_camera_configs()
-_by_hdri: dict[str, list[dict]] = {}
-for _c in _configs:
-    _by_hdri.setdefault(_c["hdri"], []).append(_c)
+# Back wall (Y+), Front wall (Y-), Left wall (X-), Right wall (X+). Each is a
+# plane standing on edge; the culling material decides visibility per camera.
+create_wall("BackWall",  (_wcx, _wcy + _wy/2, wall_height/2), (math.radians(90), 0, 0), _wx)
+create_wall("FrontWall", (_wcx, _wcy - _wy/2, wall_height/2), (math.radians(90), 0, math.radians(180)), _wx)
+create_wall("LeftWall",  (_wcx - _wx/2, _wcy, wall_height/2), (math.radians(90), 0, math.radians(90)), _wy)
+create_wall("RightWall", (_wcx + _wx/2, _wcy, wall_height/2), (math.radians(90), 0, math.radians(-90)), _wy)
 
-for hdri, cfgs in _by_hdri.items():
-    set_hdri(hdri)
+
+# === RENDER (bpa: tight-fit fit_ratio=1, transparent masters) ===
+# bpa convention: pitch 0 == top-down. This renderer stores NATIVE pitch
+# (90 == top-down), so remap via native_to_common_pitch before passing to bpa
+# AND in the filename (cross-method consistency: 0 == top-down in filenames).
+
+renderer = bpa.Renderer()
+renderer.compute_world_vertices()
+center, radius = renderer.compute_bounding_sphere()
+if radius <= 0:
+    raise RuntimeError("Degenerate bounding sphere (no visible geometry).")
+
+if render_mode == "baseline":
+    configs = [dict(res=BASELINE_RES, focal=BASELINE_FOCAL,
+                    pitch=BASELINE_PITCH, yaw=BASELINE_YAW, hdri=BASELINE_HDRI)]
+else:
+    configs = ofat_camera_configs()
+
+# Group by HDRI so the (expensive) environment-map swap happens once per HDRI.
+by_hdri: dict[str, list[dict]] = {}
+for c in configs:
+    by_hdri.setdefault(c["hdri"], []).append(c)
+
+for hdri, cfgs in by_hdri.items():
+    hdri_path = os.path.join(HDRI_DIR, f"{hdri}.exr")
+    # bpa.initialize: cycles/GPU + world + env map (lighting) + transparent film.
+    bpa.initialize(transparent=True, environment_map=(hdri_path, 1.0))
     for c in cfgs:
-        res, focal, pitch, yaw = c["res"], c["focal"], c["pitch"], c["yaw"]
-        set_camera(pitch, yaw, focal)
-        cull_walls(pitch, yaw)  # VLMUNR dollhouse culling
-        scene.render.resolution_x = res
-        scene.render.resolution_y = res
-        filename = f"render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png"
-        scene.render.filepath = os.path.join(renderings_dir, filename)
-        print(f"Rendering: {filename}")
-        bpy.ops.render.render(write_still=True)
+        res, focal, native_pitch, yaw = c["res"], c["focal"], c["pitch"], c["yaw"]
+        common_pitch = native_to_common_pitch(native_pitch)
+        master_name = render_master_filename(res, focal, common_pitch, yaw, hdri)
+        master_path = os.path.join(renderings_dir, master_name)
+        print(f"Rendering: {master_name}")
+        renderer.render_perspective(
+            master_path,
+            center,
+            radius,
+            rotation=(common_pitch, 0, yaw),
+            resolution=res,
+            focal_length=focal,
+            fit_ratio=1.0,  # tight-fit (bpa logic)
+            background=None,  # transparent master; bg composited in phase 2
+        )
 
-print(f"All renders saved to: {renderings_dir}")
+print(f"All transparent masters saved to: {renderings_dir}")
