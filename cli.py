@@ -157,10 +157,41 @@ def _git_commit():
         return None
 
 
-def _render(scene_dir):
-    """Render a scene subfolder via render_scene.py (Blender + compositing)."""
+def _render(scene_dir, mode):
+    """Render a scene subfolder via render_scene.py (Blender + compositing).
+
+    ``mode`` is "baseline" (single 512/white/city/50mm/top-down/yaw0 render) or
+    "ofat" (full one-factor-at-a-time sweep).
+    """
     script_path = join(_REPO, "rendering", "render_scene.py")
-    subprocess.run(["python", script_path, scene_dir], check=True)
+    subprocess.run(
+        ["python", script_path, scene_dir, "--mode", mode], check=True
+    )
+
+
+def _scene_dirs_in_path(path):
+    """Return ``base`` + ``variant_*`` subdirs of ``path`` that contain a
+    ``raw_blender.json`` (i.e. are renderable). Sorted base-first."""
+    dirs = []
+    base = join(path, "base")
+    if os.path.isfile(join(base, "raw_blender.json")):
+        dirs.append(base)
+    for name in sorted(os.listdir(path)):
+        if name.startswith("variant_"):
+            d = join(path, name)
+            if os.path.isdir(d) and os.path.isfile(join(d, "raw_blender.json")):
+                dirs.append(d)
+    return dirs
+
+
+def _resolve_render_mode(args):
+    """Map the mutually-exclusive --render / --render-all to a mode string
+    (or None if neither was passed)."""
+    if args.render:
+        return "baseline"
+    if args.render_all:
+        return "ofat"
+    return None
 
 
 def _set_config_paths(args):
@@ -218,11 +249,19 @@ def _check_assets():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate a Reason-3D scene from a textual prompt.",
+        description="Generate a Reason-3D scene from a textual prompt, or "
+                    "re-render an existing run folder.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    # --- source: exactly one of --prompt (generate) or --path (re-render) ---
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument("--prompt", help="Textual scene description (generates a new run).")
+    src.add_argument(
+        "--path",
+        help="Path to an existing outputs/<datetime>/ run folder to RE-RENDER "
+             "without generating (renders every base + variant_* scene in it).",
+    )
     # --- scene ---
-    parser.add_argument("--prompt", required=True, help="Textual scene description.")
     parser.add_argument(
         "--num-objects", default="",
         help="Override the number of different objects to use.",
@@ -236,9 +275,18 @@ def main():
         help="Also generate variant_01..04 (half / biggest-only / scrambled / "
              "worst-object) from the base scene (free, no regeneration).",
     )
-    parser.add_argument(
+    # --- rendering: at most one of --render (baseline) / --render-all (sweep) ---
+    rend = parser.add_mutually_exclusive_group()
+    rend.add_argument(
         "--render", action="store_true",
-        help="Render PNGs (Blender) for the base (and variants). Off by default.",
+        help="Render a single baseline PNG per scene (512px, white bg, city env, "
+             "50mm, top-down, yaw 0) via bpa. Saves a transparent master + a "
+             "white-bg composite.",
+    )
+    rend.add_argument(
+        "--render-all", action="store_true",
+        help="Render the full OFAT sweep per scene (resolution/focal/pitch/yaw/env"
+             "/background factor sweeps) via bpa.",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
@@ -282,6 +330,30 @@ def main():
     )
     args = parser.parse_args()
 
+    render_mode = _resolve_render_mode(args)
+
+    # --- --path mode: no generation, just re-render existing scenes ---
+    if args.path is not None:
+        if render_mode is None:
+            sys.exit("--path requires --render or --render-all (nothing else to do).")
+        run_dir = abspath(args.path)
+        if not os.path.isdir(run_dir):
+            sys.exit(f"--path not found: {run_dir}")
+        scene_dirs = _scene_dirs_in_path(run_dir)
+        if not scene_dirs:
+            sys.exit(
+                f"No renderable scene subfolders (base/variant_* with "
+                f"raw_blender.json) found in: {run_dir}"
+            )
+        print(f"[cli] Re-rendering {len(scene_dirs)} scene(s) in {run_dir} "
+              f"(mode={render_mode})")
+        for d in scene_dirs:
+            print(f"[cli] Rendering {d}")
+            _render(d, render_mode)
+        print(f"[cli] Done. Rendered {len(scene_dirs)} scenes in {run_dir}")
+        return
+
+    # --- --prompt mode: generate a new run ---
     _set_config_paths(args)
     _check_assets()
     _check_data_files()
@@ -307,7 +379,7 @@ def main():
         "num_objects": args.num_objects,
         "no_refinement": args.no_refinement,
         "variants": args.variants,
-        "render": args.render,
+        "render_mode": render_mode,
         "seed": args.seed,
         "assets": config.ASSETS,
         "images": config.IMAGES,
@@ -346,10 +418,10 @@ def main():
             scene_dirs.append(join(run_dir, v))
 
     # 3) Optional rendering
-    if args.render:
+    if render_mode is not None:
         for d in scene_dirs:
-            print(f"[cli] Rendering {d}")
-            _render(d)
+            print(f"[cli] Rendering {d} (mode={render_mode})")
+            _render(d, render_mode)
 
     print(f"[cli] Done. Outputs in {run_dir}")
 
