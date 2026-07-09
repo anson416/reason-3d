@@ -3,7 +3,7 @@ import os
 import sys
 import uuid
 from glob import glob
-from os.path import abspath, dirname, join, splitext
+from os.path import abspath, dirname, exists, join, splitext
 
 import bpy
 import mathutils
@@ -30,9 +30,7 @@ class Vector3Data:
 
 
 class PrefabData:
-    def __init__(
-        self, name, image_paths, rotation_paths, bounds_center, bounds_size
-    ):
+    def __init__(self, name, image_paths, rotation_paths, bounds_center, bounds_size):
         self.guid = str(uuid.uuid4())
         self.prefabName = name
         self.imagePaths = image_paths
@@ -85,9 +83,7 @@ def get_bounds(obj):
     if obj.type == "MESH":
         meshes.append(obj)
     elif obj.children:
-        meshes += [
-            child for child in obj.children_recursive if child.type == "MESH"
-        ]
+        meshes += [child for child in obj.children_recursive if child.type == "MESH"]
 
     if not meshes:
         return mathutils.Vector((0, 0, 0)), mathutils.Vector((0, 0, 0))
@@ -95,9 +91,7 @@ def get_bounds(obj):
     verts = []
     for mesh_obj in meshes:
         if mesh_obj.data:
-            verts.extend(
-                [mesh_obj.matrix_world @ v.co for v in mesh_obj.data.vertices]
-            )
+            verts.extend([mesh_obj.matrix_world @ v.co for v in mesh_obj.data.vertices])
 
     min_corner = mathutils.Vector((min(v[i] for v in verts) for i in range(3)))
     max_corner = mathutils.Vector((max(v[i] for v in verts) for i in range(3)))
@@ -108,6 +102,10 @@ def get_bounds(obj):
 
 # === THUMBNAIL RENDERING ===
 def render_thumbnail(obj, angle_name, camera_offset):
+    out_path = join(SAVE_PATH, f"{obj.name}_{angle_name}.png")
+    if exists(out_path):
+        return out_path
+
     center, size = get_bounds(obj)
 
     # Setup camera
@@ -133,9 +131,7 @@ def render_thumbnail(obj, angle_name, camera_offset):
     bpy.context.scene.render.film_transparent = True
     bpy.context.scene.render.image_settings.color_mode = "RGBA"
     bpy.context.scene.render.image_settings.file_format = "PNG"
-    bpy.context.scene.render.filepath = join(
-        SAVE_PATH, f"{obj.name}_{angle_name}.png"
-    )
+    bpy.context.scene.render.filepath = out_path
 
     bpy.ops.render.render(write_still=True)
     bpy.data.objects.remove(cam, do_unlink=True)
@@ -148,23 +144,18 @@ def process_prefabs():
     os.makedirs(SAVE_PATH, exist_ok=True)
     prefab_data_list = []
 
-    for file in os.listdir(TARGET_FOLDER):
-        if not file.lower().endswith(
-            (".blend", ".fbx", ".obj", ".glb", ".gltf")
-        ):
-            continue
-        filename = splitext(file)[0]
-        if len(glob(join(SAVE_PATH, f"{filename}_*.png"))) == 6:
+    files = os.listdir(TARGET_FOLDER)
+    total = len(files)
+    for i, file in enumerate(files):
+        if not file.lower().endswith((".blend", ".fbx", ".obj", ".glb", ".gltf")):
             continue
 
-        print(f"📦 Processing {file}")
+        print(f"📦 [{i + 1}/{total}] Processing {file}")
         clear_scene()
         full_path = join(TARGET_FOLDER, file)
         import_model(full_path)
 
-        mesh_objs = [
-            obj for obj in bpy.context.scene.objects if obj.type == "MESH"
-        ]
+        mesh_objs = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
         if not mesh_objs:
             print(f"⚠️ Skipped: No mesh found in {file}")
             continue
@@ -183,24 +174,14 @@ def process_prefabs():
             obj.parent = prefab_root
 
         # Render two diagonal thumbnails
-        image1 = render_thumbnail(
-            prefab_root, "TopLeft", mathutils.Vector((-1, -1, 2))
-        )
+        image1 = render_thumbnail(prefab_root, "TopLeft", mathutils.Vector((-1, -1, 2)))
         image2 = render_thumbnail(
             prefab_root, "BottomRight", mathutils.Vector((1, 1, 1))
         )
-        image3 = render_thumbnail(
-            prefab_root, "(0,0,-1)", mathutils.Vector((0, 1, 0))
-        )
-        image4 = render_thumbnail(
-            prefab_root, "(1,0,0)", mathutils.Vector((-1, 0, 0))
-        )
-        image5 = render_thumbnail(
-            prefab_root, "(-1,0,0)", mathutils.Vector((1, 0, 0))
-        )
-        image6 = render_thumbnail(
-            prefab_root, "(0,0,1)", mathutils.Vector((0, -1, 0))
-        )
+        image3 = render_thumbnail(prefab_root, "(0,0,-1)", mathutils.Vector((0, 1, 0)))
+        image4 = render_thumbnail(prefab_root, "(1,0,0)", mathutils.Vector((-1, 0, 0)))
+        image5 = render_thumbnail(prefab_root, "(-1,0,0)", mathutils.Vector((1, 0, 0)))
+        image6 = render_thumbnail(prefab_root, "(0,0,1)", mathutils.Vector((0, -1, 0)))
         # Get bounds
         center, size = get_bounds(prefab_root)
 
