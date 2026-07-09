@@ -1,48 +1,29 @@
 import os
 
 # Global variables
-API_KEY = os.environ.get("CA_API_KEY3") or os.environ.get("CHATANYWHERE_API_KEY")
+API_KEY = os.environ.get("CHATANYWHERE_API_KEY") or os.environ.get("OPENAI_API_KEY")
 BASE_URL = "https://api.chatanywhere.tech/v1"
 # Text-reasoning backbone for placement (text-agnostic role), standardised on a
 # single pinned snapshot for the audit.
-MODEL = "gpt-5.1-2025-11-13"
+MODEL = "gemini-3-flash-preview"
 
 # Paths
 git_root = os.path.dirname(os.path.abspath(__file__))
-# Asset/image dirs default to large scratch storage (home quota is tiny);
-# override with VLMUNR_REASON_ASSETS / VLMUNR_REASON_IMAGES if needed.
-_ASSETS_DEFAULT = "/research/d2/fyp24/yflam1/reason_assets/"
-_IMAGES_DEFAULT = "/research/d2/fyp24/yflam1/reason_images/"
-# Prefer the objathor-assets flat structure (uid/uid.glb) when the legacy
-# ~/reason_assets/ symlinks are broken.
-_OBJATHOR_ASSETS = os.path.expanduser("~/.objathor-assets/2023_09_23/assets")
-ASSETS = os.environ.get(
-    "VLMUNR_REASON_ASSETS",
-    _ASSETS_DEFAULT if os.path.isdir(_ASSETS_DEFAULT)
-    else (_OBJATHOR_ASSETS if os.path.isdir(_OBJATHOR_ASSETS)
-          else os.path.expanduser("~/reason_assets/")),
-)  # PATH to your folder with 3d objects (.fbx, .obj, .glb, .blend)
-IMAGES = os.environ.get(
-    "VLMUNR_REASON_IMAGES",
-    _IMAGES_DEFAULT if os.path.isdir(_IMAGES_DEFAULT) else os.path.expanduser("~/reason_images/"),
-)  # PATH where to save all images from the preprocessing
-DESCRIPTIONS = os.path.join(
-    git_root, "data/descriptions.json"
-)  # PATH to object descriptions
-EMBEDDINGS = os.path.join(
-    git_root, "data/embeddings.json"
-)  # PATH to description embeddings
-OBJ_DATA = os.path.join(
-    git_root, "data/object_data.json"
-)  # PATH to object metadata
-ROTATION_DATA = os.path.join(
-    git_root, "data/rotation_data.json"
-)  # PATH to fixed rotation data
+# PATH to your folder with 3d objects (.fbx, .obj, .glb, .blend)
+ASSETS = os.environ.get("REASON3D_ASSETS", os.path.expanduser("~/reason_assets/"))
+# PATH where to save all images from the preprocessing
+IMAGES = os.environ.get("REASON3D_IMAGES", os.path.expanduser("~/reason_images/"))
+# PATH to object descriptions
+DESCRIPTIONS = os.path.join(git_root, "data/descriptions.json")
+# PATH to description embeddings
+EMBEDDINGS = os.path.join(git_root, "data/embeddings.json")
+# PATH to object metadata
+OBJ_DATA = os.path.join(git_root, "data/object_data.json")
+# PATH to fixed rotation data
+ROTATION_DATA = os.path.join(git_root, "data/rotation_data.json")
 RESULTS = os.path.join(git_root, "results")  # PATH to the results folder
 OUTPUT = os.path.join(RESULTS, "raw_outputs")  # Raw pipeline output
-BLENDER_FILE = os.path.join(
-    RESULTS, "raw_blender.json"
-)  # Converted for blender
+BLENDER_FILE = os.path.join(RESULTS, "raw_blender.json")  # Converted for blender
 RENDERS = os.path.join(RESULTS, "final_renders")  # Final renders (legacy)
 
 # === Rendering Constants ===
@@ -164,7 +145,9 @@ def render_master_filename(
 
     ``render_res-<res>_focal-<focal>_pitch-<pitch>_yaw-<yaw>_env-<env>.png``
     """
-    return f"render_res-{res}_focal-{focal}_pitch-{common_pitch}_yaw-{yaw}_env-{env}.png"
+    return (
+        f"render_res-{res}_focal-{focal}_pitch-{common_pitch}_yaw-{yaw}_env-{env}.png"
+    )
 
 
 def render_composite_filename(
