@@ -9,23 +9,23 @@ description = "Reason-3D: Text-to-Scene with Large Reasoning Models (VLM-unrelia
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "json_repair",
-    "numpy==2.3.2",
-    "openai",
-    "pillow==11.3.0",
-    "pydantic",
-    "rich",
-    "scikit-learn==1.7.1",
-    "torch",
+  "json_repair",
+  "numpy==2.3.2",
+  "openai",
+  "pillow==11.3.0",
+  "pydantic",
+  "rich",
+  "scikit-learn==1.7.1",
+  "torch",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "Natural Language :: English",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Multimedia :: Graphics :: 3D Modeling",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 # Optional, role-based installs (mirror the genxr layout).
@@ -34,18 +34,9 @@ classifiers = [
 #   preprocess-> the one-time VLM asset preprocessing (Gemini)
 #   dev       -> lint/format/test tooling
 [project.optional-dependencies]
-core = [
-    "bpy==5.1.2",
-    "opencv-python-headless",
-]
-render = [
-    "bpy==5.1.2",
-    "pillow==11.3.0",
-]
-preprocess = [
-    "google-genai",
-    "opencv-python-headless",
-]
+core = ["bpy==5.1.2", "opencv-python-headless"]
+render = ["bpy==5.1.2", "pillow==11.3.0"]
+preprocess = ["google-genai", "opencv-python-headless"]
 dev = ["pytest"]
 
 [project.scripts]
