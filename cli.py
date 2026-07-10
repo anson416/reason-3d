@@ -100,7 +100,7 @@ OUTPUT LAYOUT
     ├── variant_01_half/             # ~50% of objects (seeded subset), positions intact
     ├── variant_02_biggest-only/     # only the largest object (by bbox volume)
     ├── variant_03_scrambled/        # re-positioned + re-rotated within the scene footprint
-    └── variant_04_worst-object/     # each asset swapped to the globally least-similar prefab
+    └── variant_04_worst-object/     # each object swapped to a DISTINCT worst-matching prefab
 
 Each variant folder has the SAME layout as ``base/`` (placed_objects.json,
 placed_objects_data.json, prompt.txt, raw_blender.json, meshes/, renderings/).
@@ -110,7 +110,11 @@ locally — NO LLM and NO embedding API calls — so the only billed work is the
 single base-scene generation. ``variant_04_worst-object`` "hacks" the asset-
 selection sort (which normally picks the MOST-similar prefab) to pick the
 LEAST-similar one, computed from the stored embeddings of the chosen asset, so
-it needs no API at all.
+it needs no API at all. The swap is identity-only (only the asset ``guid``
+changes; the original size/position/rotation are kept, so the worst-matching
+mesh is rescaled to the object's ORIGINAL intended dimensions), and greedy
+distinct assignment + a degenerate-asset filter keep each object on its OWN
+worst match instead of all collapsing onto a single near-orthogonal outlier.
 
 ------------------------------------------------------------------------
 RENDERING (bpa logic; --render / --render-all / --path)

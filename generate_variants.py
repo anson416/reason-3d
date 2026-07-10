@@ -403,86 +403,130 @@ def generate_scrambled_variant(
     print(f"  variant_03_scrambled: {len(objs)} objects re-positioned/rotated")
 
 
-def _worst_match_for_guid(query_guid, embeddings_data):
-    """Globally LEAST-similar prefab to the asset identified by ``query_guid``,
-    using only the stored embeddings (zero API calls).
+# A prefab is treated as usable for the worst-object swap only if its bounding
+# box is physically plausible on every axis. Outside this band the asset is a
+# dataset/scaling artefact (e.g. the 165,000 m or 0.02 m outliers) whose
+# near-orthogonal embedding would otherwise win as the "least similar" prefab
+# for almost every furniture query and collapse the whole variant onto one
+# broken object. The normal selection algorithm never picks these (they are
+# never top-similar to anything), so mirroring that here keeps the worst-match
+# swap meaningful.
+_WORST_MIN_AXIS_M = 0.02
+_WORST_MAX_AXIS_M = 50.0
 
-    The selected asset's own physical/functional/contextual embeddings live in
-    embeddings.json, so we rank every OTHER prefab by mean cosine similarity to
-    that chosen asset and return the minimum. This is exactly 'hack the sort to
-    descending and pick the first', applied post-hoc to the base scene.
+
+def _plausible_prefab_guids(obj_data):
+    """Set of prefab guids with every ``boundsSize`` axis in the plausible band."""
+    valid = set()
+    for p in obj_data.get("prefabs", []):
+        b = p.get("boundsSize") or {}
+        try:
+            x, y, z = abs(b["x"]), abs(b["y"]), abs(b["z"])
+        except (KeyError, TypeError):
+            continue
+        if (
+            _WORST_MIN_AXIS_M <= x <= _WORST_MAX_AXIS_M
+            and _WORST_MIN_AXIS_M <= y <= _WORST_MAX_AXIS_M
+            and _WORST_MIN_AXIS_M <= z <= _WORST_MAX_AXIS_M
+        ):
+            valid.add(p["guid"])
+    return valid
+
+
+def _worst_match_similarities(query_guid, embeddings_data, valid_guids):
+    """Prefabs ranked LEAST-similar-first to the asset ``query_guid`` (zero API
+    calls: the chosen asset's own phys/func/cont embeddings live in
+    embeddings.json), restricted to plausible prefabs.
+
+    Comparison mirrors ``Object_retriever.find_assets_for_scene`` (mean of
+    cosine(phys, phys) + cosine(func, func) + cosine(cont, cont)), but ranked
+    ASCENDING so the first entry is the worst match -- the selection algorithm
+    picks the best; this is the post-hoc "hack the sort to descending and pick
+    the first" applied to the already-chosen asset.
     """
-    q = embeddings_data.get(
-        next(
-            (name for name, d in embeddings_data.items() if d["guid"] == query_guid),
-            None,
-        )
+    q_name = next(
+        (n for n, d in embeddings_data.items() if d["guid"] == query_guid), None
     )
+    q = embeddings_data.get(q_name)
     if q is None:
-        return None
+        return []
     q_phys = np.array(q["embedding_phys"])
     q_func = np.array(q["embedding_func"])
     q_cont = np.array(q["embedding_cont"])
-    worst = None  # (sim, guid)
-    for prefab_name, data in embeddings_data.items():
-        if data["guid"] == query_guid:
+    ranked = []  # (sim, guid) ascending
+    for data in embeddings_data.values():
+        guid = data["guid"]
+        if guid == query_guid or guid not in valid_guids:
             continue
         sim = (
             cosine_similarity([q_phys], [np.array(data["embedding_phys"])])[0][0]
             + cosine_similarity([q_func], [np.array(data["embedding_func"])])[0][0]
             + cosine_similarity([q_cont], [np.array(data["embedding_cont"])])[0][0]
         ) / 3
-        if worst is None or sim < worst[0]:
-            worst = (sim, data["guid"])
-    return worst
+        ranked.append((sim, guid))
+    ranked.sort(key=lambda x: x[0])
+    return ranked
 
 
 def generate_worst_object_variant(
     scene_dir, placed_objects, placed_objects_data, prompt_text
 ):
-    """Swap every object's asset for the globally least-similar prefab.
+    """Swap each object's asset for a distinct least-similar prefab.
 
-    Position/rotation are preserved (consistent with the substitution-variant
-    methodology); only the asset identity (guid) and its size/boundsCenter
-    change so the renderer loads the worst-matching mesh. NO LLM and NO
-    embedding API calls — rankings come from stored embeddings.
+    Mirrors the object-selection algorithm (rank prefabs by mean cosine
+    similarity, pick the best) but inverts the pick: each object gets the
+    WORST-matching prefab, computed from the stored embeddings of its already
+    chosen asset (so zero API calls). Greedy distinct assignment -- each object
+    takes its worst prefab not already claimed by an earlier object -- stops the
+    variant collapsing onto the single globally-most-dissimilar prefab (a
+    near-orthogonal outlier that wins for most furniture queries), so every
+    object becomes its OWN worst match instead of all becoming the same one.
+
+    Only the asset identity (``guid``) changes; ``size``, ``size_after_rotation``,
+    ``boundsCenter``, ``center`` and ``rotation`` are preserved so the renderer
+    rescales each worst-matching mesh to the object's ORIGINAL intended
+    dimensions (isolating object identity from geometry, like the substitution
+    variants' ``_apply_swap``).
     """
     with open(EMBEDDINGS) as f:
         embeddings_data = json.load(f)
     with open(OBJ_DATA) as f:
         obj_data = json.load(f)
-    obj_data_by_guid = {p["guid"]: p for p in obj_data["prefabs"]}
+    valid_guids = _plausible_prefab_guids(obj_data)
 
     variant_objs = copy.deepcopy(placed_objects)
     variant_data = copy.deepcopy(placed_objects_data)
+
+    # Cache each unique chosen-asset's worst-match ranking (the ranking is
+    # identical for duplicate placements of the same asset, e.g. two Nightstands).
+    rankings_cache = {}
+
+    def ranking_for(guid):
+        if guid not in rankings_cache:
+            rankings_cache[guid] = _worst_match_similarities(
+                guid, embeddings_data, valid_guids
+            )
+        return rankings_cache[guid]
+
+    taken = set()
+    swapped = 0
     for i, data in enumerate(variant_data):
-        worst = _worst_match_for_guid(data["guid"], embeddings_data)
-        if worst is None:
-            continue
-        _, new_guid = worst
-        new_obj_data = obj_data_by_guid.get(new_guid)
-        if new_obj_data is None:
-            continue
-        new_bounds_center = [
-            new_obj_data["boundsCenter"]["x"],
-            new_obj_data["boundsCenter"]["y"],
-            new_obj_data["boundsCenter"]["z"],
-        ]
-        new_size = [
-            new_obj_data["boundsSize"]["x"],
-            new_obj_data["boundsSize"]["y"],
-            new_obj_data["boundsSize"]["z"],
-        ]
-        variant_data[i]["guid"] = new_guid
-        variant_data[i]["boundsCenter"] = new_bounds_center
-        variant_data[i]["size"] = new_size
-        variant_objs[i]["size"] = new_size
-        variant_objs[i]["size_after_rotation"] = get_rotated_bounding_box(
-            new_size, variant_objs[i]["rotation"]
-        )
+        for _sim, new_guid in ranking_for(data["guid"]):
+            if new_guid not in taken:
+                taken.add(new_guid)
+                # Identity-only swap: only the guid changes; size /
+                # size_after_rotation / boundsCenter / center / rotation are
+                # kept, so the renderer fits the new mesh to the ORIGINAL size.
+                variant_data[i]["guid"] = new_guid
+                swapped += 1
+                break
+
     variant_dir = os.path.join(scene_dir, "variant_04_worst-object")
     write_variant(variant_dir, variant_objs, variant_data, prompt_text)
-    print(f"  variant_04_worst-object: {len(variant_objs)} objects swapped")
+    print(
+        f"  variant_04_worst-object: {swapped}/{len(variant_objs)} objects "
+        f"swapped to distinct worst matches"
+    )
 
 
 def generate_named_variants(
