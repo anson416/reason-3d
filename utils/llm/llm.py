@@ -1,6 +1,7 @@
 import logging
 import random
 import time
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import (
@@ -241,7 +242,13 @@ class Llm(OpenAiApi):
             self._history.append(llm_output)
             delay = 0.0
             try:
-                with console.status("Generating response..."):
+                # The rich live spinner is not thread-safe; skip it when
+                # verbose is off so concurrent callers don't corrupt/raise.
+                with (
+                    console.status("Generating response...")
+                    if verbose
+                    else nullcontext()
+                ):
                     completion: ChatCompletion = (
                         self._client.chat.completions.create(
                             messages=self._messages.to_api_format(),
@@ -344,6 +351,12 @@ class Llm(OpenAiApi):
     def clear_context(self) -> None:
         self._messages.clear()
 
+    def clear_history(self) -> None:
+        """Drop retained call history (each entry holds a deepcopy of the
+        messages, including base64 image content). Call between independent
+        invocations on a long-lived client to bound memory growth."""
+        self._history.clear()
+
     def replicate(self) -> Self:
         return Llm(
             model=self._model,
@@ -429,6 +442,60 @@ class TextEmbedder(OpenAiApi):
             return torch.tensor(emb)
         elif response_type is np.ndarray:
             return np.array(emb)
+        else:
+            raise ValueError(f"Unsupported response_type: {response_type}")
+
+    @validate_call(config=dict(arbitrary_types_allowed=True))
+    def embed_batch(
+        self,
+        texts: list[str],
+        response_type: Optional[
+            Union[type[torch.Tensor], type[np.ndarray], type[list]]
+        ] = None,
+    ) -> Union[torch.Tensor, np.ndarray, list]:
+        """Embed multiple texts in a single API request.
+
+        The OpenAI embeddings endpoint accepts a list of inputs and returns
+        one vector each, billed and rate-limited as one request. This replaces
+        N parallel single-text calls (each its own TLS round-trip through the
+        proxy) with one round-trip — far faster under the third-party proxy's
+        rate limit, where N concurrent single calls serialize via backoff.
+
+        Args:
+            texts: The texts to embed, in input order.
+            response_type: Container for the result. ``None``/``list`` yields a
+                list of float lists; ``np.ndarray``/``torch.Tensor`` yield one
+                2-D array of shape (len(texts), dim).
+
+        Returns:
+            Embeddings in the same order as ``texts``.
+        """
+        if not texts:
+            if response_type is None or response_type is list:
+                return []
+            elif response_type is torch.Tensor:
+                return torch.empty((0, 0))
+            elif response_type is np.ndarray:
+                return np.empty((0, 0))
+            else:
+                raise ValueError(f"Unsupported response_type: {response_type}")
+
+        response = self._client.embeddings.create(
+            model=self._model, input=texts
+        )
+        if self._input_cost_per_token is not None:
+            self._cost += (
+                response.usage.total_tokens * self._input_cost_per_token
+            )
+        # The API documents that data is returned in input order, but sort by
+        # each item's ``index`` so order is guaranteed regardless.
+        embeddings = [d.embedding for d in sorted(response.data, key=lambda x: x.index)]
+        if response_type is None or response_type is list:
+            return embeddings
+        elif response_type is torch.Tensor:
+            return torch.tensor(embeddings)
+        elif response_type is np.ndarray:
+            return np.array(embeddings)
         else:
             raise ValueError(f"Unsupported response_type: {response_type}")
 
