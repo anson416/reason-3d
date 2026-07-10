@@ -332,15 +332,29 @@ def create_wall(name, location, rotation, length_scale):
 
 
 def apply_backface_culling(material):
-    """Dollhouse convention: make camera-facing (front) faces transparent and
-    keep back-facing faces visible, driven by the surface normal. Mirrors
-    bpa.Builder.add_material(..., backface_culling=True) node wiring, applied to
-    an existing material so the loaded .blend wall texture is preserved.
+    """Dollhouse convention: hide camera-facing (near) walls and keep far
+    walls visible, driven by the surface normal.
 
-    ShaderNodeNewGeometry.Backfacing is 1 for back-facing faces, 0 for front.
-    MixShader(Fac=Backfacing): Fac=0 -> input[1]=Transparent (front->see-through),
-    Fac=1 -> input[2]=BSDF (back->visible). So near walls' exteriors become
-    transparent (camera sees into the room) while far walls remain visible.
+    The four walls below are built as plane primitives whose normals point
+    INWARD (toward the room center -- see create_wall rotations). With the
+    camera above/outside looking in, the near wall's exterior is therefore the
+    BACK face of that plane (Backfacing=1) and the far wall's interior is the
+    FRONT face (Backfacing=0).
+
+    We wire MixShader(Fac=Backfacing) so:
+      Fac=0 (front-facing -> far wall interior)  -> input[1] = BSDF         (visible)
+      Fac=1 (back-facing  -> near wall exterior) -> input[2] = Transparent  (see-through)
+    which gives the dollhouse look: you see into the room through the near
+    walls while the far wall stays opaque.
+
+    NOTE: this is the INVERSE of bpa.Builder.add_material(..., backface_culling=True)
+    node wiring, because bpa assumes a closed box with OUTWARD normals (where
+    the near wall exterior is front-facing). Our open plane walls face inward,
+    so the two shader inputs are swapped accordingly.
+
+    (From straight top-down the vertical walls are edge-on to the camera and
+    thus have ~zero projected area regardless of culling -- top-down correctly
+    shows the floor plan, not a wall surface.)
     """
     material.use_nodes = True
     nodes = material.node_tree.nodes
@@ -362,10 +376,11 @@ def apply_backface_culling(material):
     mix = nodes.new("ShaderNodeMixShader")
     transparent = nodes.new("ShaderNodeBsdfTransparent")
     geometry = nodes.new("ShaderNodeNewGeometry")
-    links.new(bsdf.outputs["BSDF"], mix.inputs[2])
+    # Fac=0 (front, far wall) -> BSDF visible; Fac=1 (back, near wall) -> transparent.
+    links.new(bsdf.outputs["BSDF"], mix.inputs[1])
     links.new(mix.outputs["Shader"], output.inputs["Surface"])
     links.new(geometry.outputs["Backfacing"], mix.inputs["Fac"])
-    links.new(transparent.outputs["BSDF"], mix.inputs[1])
+    links.new(transparent.outputs["BSDF"], mix.inputs[2])
 
 
 # Apply the dollhouse back-face culling once to the shared wall material.
