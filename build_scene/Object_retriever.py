@@ -2,7 +2,6 @@ import sys
 from os.path import abspath, dirname, join
 
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from utilities import Attributes, get_attr_from_guid
 
 sys.path.append(abspath(join(dirname(__file__), "..")))
@@ -54,14 +53,24 @@ Output (JSON):
     return {"objects": objects}
 
 
+# When the LLM rejects every candidate (index 0), fall back to the top-1
+# similarity match only if it clears this threshold -- a high-similarity match
+# that the LLM spuriously rejected (common under a slow/flaky proxy) is far
+# more useful to placement than dropping the object entirely, which can nuke
+# the whole scene when it happens to every object. Below the threshold the
+# match is genuinely weak, so the object is dropped as before.
+_TOP1_FALLBACK_SIMILARITY = 0.6
+
+
 def find_assets_for_scene(scene_description, embeddings_data, top_n, gen=None):
     """
-    Generate 10 descriptions of assets required for the scene and return best matches.
+    Generate descriptions of assets required for the scene and return best matches.
 
     Args:
         scene_description: Description of the scene
         embeddings_data: Dictionary containing prefab embeddings
         top_n: Number of objects to return
+        gen: Optional GenConfig override for the chat-LLM roles.
 
     Returns:
         List of top matching prefabs
@@ -69,11 +78,31 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n, gen=None):
     # Get objects needed for scene
     scene_objects = get_scene_objects(scene_description, top_n, gen)
 
-    # Calculate similarity with each prefab
+    # Build the prefab embedding matrices ONCE (vectorized cosine similarity).
+    # The previous implementation called sklearn.cosine_similarity once per
+    # prefab per property field (~150k individual calls per object on a 50k
+    # asset DB), which made each scene take 10-15 min through a flaky proxy and
+    # increased the chance of degenerate LLM responses downstream. The math
+    # here is identical: cosine similarity is the dot product of L2-normalized
+    # vectors, computed as a single matrix multiply per field.
+    prefab_names = list(embeddings_data.keys())
+    prefab_phys = np.array(
+        [embeddings_data[n]["embedding_phys"] for n in prefab_names], dtype=np.float32
+    )
+    prefab_func = np.array(
+        [embeddings_data[n]["embedding_func"] for n in prefab_names], dtype=np.float32
+    )
+    prefab_cont = np.array(
+        [embeddings_data[n]["embedding_cont"] for n in prefab_names], dtype=np.float32
+    )
+    prefab_guids = [embeddings_data[n]["guid"] for n in prefab_names]
+    # L2-normalize rows; +eps guards against a zero vector.
+    prefab_phys /= np.linalg.norm(prefab_phys, axis=1, keepdims=True) + 1e-9
+    prefab_func /= np.linalg.norm(prefab_func, axis=1, keepdims=True) + 1e-9
+    prefab_cont /= np.linalg.norm(prefab_cont, axis=1, keepdims=True) + 1e-9
 
     chosen_assets = []
     for asset in scene_objects.get("objects", scene_objects):
-        similarities = []
         name = asset.get("name")
         phys_desc, func_desc, cont_desc = (
             asset.get("Physical properties"),
@@ -85,41 +114,29 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n, gen=None):
             get_embedding(f"{name}: {func_desc}"),
             get_embedding(f"{name}: {cont_desc}"),
         )
-        for prefab_name, data in embeddings_data.items():
-            prefab_embedding_phys = np.array(data["embedding_phys"])
-            prefab_embedding_func = np.array(data["embedding_func"])
-            prefab_embedding_cont = np.array(data["embedding_cont"])
+        # Normalize the query vectors, then similarity = mean of three cosine
+        # sims (one per property field) -- same weighting as before.
+        object_phys_embedding /= np.linalg.norm(object_phys_embedding) + 1e-9
+        object_func_embedding /= np.linalg.norm(object_func_embedding) + 1e-9
+        object_cont_embedding /= np.linalg.norm(object_cont_embedding) + 1e-9
+        similarities = (
+            prefab_phys @ object_phys_embedding
+            + prefab_func @ object_func_embedding
+            + prefab_cont @ object_cont_embedding
+        ) / 3.0
 
-            # Calculate cosine similarity
-            similarity = (
-                cosine_similarity(
-                    [object_phys_embedding], [prefab_embedding_phys]
-                )[0][0]
-                / 3
-                + cosine_similarity(
-                    [object_func_embedding], [prefab_embedding_func]
-                )[0][0]
-                / 3
-                + cosine_similarity(
-                    [object_cont_embedding], [prefab_embedding_cont]
-                )[0][0]
-                / 3
-            )
-
-            similarities.append(
-                {
-                    "prefab_name": prefab_name,
-                    "guid": data["guid"],
-                    "quantity": asset.get("quantity"),
-                    "similarity": similarity,
-                }
-            )
-
-        # Sort by similarity (highest first)
-        similarities.sort(key=lambda x: x["similarity"], reverse=True)
-
-        # Top candidates (fewer than 5 if the asset database is small).
-        candidates = similarities[:5]
+        # Top candidates (fewer than 5 if the asset database is small), highest
+        # similarity first.
+        order = np.argsort(-similarities)[:5]
+        candidates = [
+            {
+                "prefab_name": prefab_names[i],
+                "guid": prefab_guids[i],
+                "quantity": asset.get("quantity"),
+                "similarity": float(similarities[i]),
+            }
+            for i in order
+        ]
         #############
         # Let LLM decide from the candidates
         #############
@@ -140,15 +157,28 @@ def find_assets_for_scene(scene_description, embeddings_data, top_n, gen=None):
         if 0 < index <= len(candidates):
             chosen_assets.append(candidates[index - 1])
         else:
-            chosen_assets.append(
-                {
-                    "guid": 0,
-                    "reason": f"Object not found. No matches exist for '{name}' in your database.",
-                }
-            )
-            print(
-                f"Object not found. No matches exist for '{name}' in your database."
-            )
+            # LLM rejected every candidate (index 0 / out of range). Fall back
+            # to the top-1 match when it is strong enough that a spurious
+            # rejection (slow proxy, degenerate output) is the more likely
+            # explanation than a genuinely absent object.
+            top1 = candidates[0] if candidates else None
+            if top1 is not None and top1["similarity"] >= _TOP1_FALLBACK_SIMILARITY:
+                print(
+                    f"[retrieve] LLM rejected all candidates for '{name}'; "
+                    f"falling back to top-1 match (similarity="
+                    f"{top1['similarity']:.3f}, guid={top1['guid']})."
+                )
+                chosen_assets.append(top1)
+            else:
+                chosen_assets.append(
+                    {
+                        "guid": 0,
+                        "reason": f"Object not found. No matches exist for '{name}' in your database.",
+                    }
+                )
+                print(
+                    f"Object not found. No matches exist for '{name}' in your database."
+                )
     return chosen_assets
 
 
