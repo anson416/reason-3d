@@ -172,7 +172,12 @@ def export_meshes(scene_dir):
             continue
         ext = os.path.splitext(src)[1]
         obj_name = obj.get("name") or name
-        dst = os.path.join(meshes_dir, f"{obj_name}{ext}")
+        # Asset names use a ``category/name`` convention (e.g.
+        # ``Office/Gaming Chair``), so flatten any path separators in the
+        # destination filename -- otherwise os.path.join treats the category as
+        # a (non-existent) subdirectory of meshes/ and copy2 fails.
+        safe_name = obj_name.replace(os.sep, "_").replace("/", "_").replace("\\", "_")
+        dst = os.path.join(meshes_dir, f"{safe_name}{ext}")
         shutil.copy2(src, dst)
 
 
